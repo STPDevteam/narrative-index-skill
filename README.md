@@ -13,24 +13,61 @@ This Skill enables AI agents (Claude, Cursor, etc.) to autonomously manage the f
 
 ## Installation
 
-### Cursor IDE
+### npx skills add (Recommended)
 
-Copy the skill directory into your project:
+Install from GitHub using the [skills CLI](https://www.npmjs.com/package/skills):
 
 ```bash
-git clone git@github.com:STPDevteam/narrative-index-skill.git .cursor/skills/narrative-index
+npx skills add STPDevteam/narrative-index-skill
 ```
 
-Or add as a user-level skill (available across all projects):
+Install globally (available across all projects):
 
 ```bash
-git clone git@github.com:STPDevteam/narrative-index-skill.git ~/.cursor/skills/narrative-index
+npx skills add STPDevteam/narrative-index-skill -g
 ```
 
-### Claude Code
+Install to a specific agent:
 
 ```bash
-git clone git@github.com:STPDevteam/narrative-index-skill.git .claude/skills/narrative-index
+npx skills add STPDevteam/narrative-index-skill -a cursor
+npx skills add STPDevteam/narrative-index-skill -a claude-code
+```
+
+### ClawHub
+
+Install from the [ClawHub](https://clawhub.com) skill registry:
+
+```bash
+clawhub install narrative-index-skill
+```
+
+Or search first:
+
+```bash
+clawhub search narrative-index
+clawhub info narrative-index-skill
+clawhub install narrative-index-skill
+```
+
+### Manual Installation
+
+Clone and copy into your agent's skills directory:
+
+```bash
+git clone https://github.com/STPDevteam/narrative-index-skill.git
+
+# For Cursor (project-scoped, shared with team)
+cp -r narrative-index-skill .agents/skills/narrative-index-skill
+
+# For Cursor (global)
+cp -r narrative-index-skill ~/.cursor/skills/narrative-index-skill
+
+# For Claude Code (project-scoped)
+cp -r narrative-index-skill .claude/skills/narrative-index-skill
+
+# For Claude Code (global)
+cp -r narrative-index-skill ~/.claude/skills/narrative-index-skill
 ```
 
 ### Claude API
