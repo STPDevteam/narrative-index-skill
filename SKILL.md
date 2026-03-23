@@ -247,6 +247,12 @@ Query withdrawal fee beforehand with `GET /wallets/withdraw-fee`.
   ensuring diversified allocation across strikes.
 - **Safe wallet**: Platform-managed Gnosis Safe on Polygon. Users never hold
   private keys; the platform signs via encrypted EOA owner keys.
+- **USDC.e required**: The platform only accepts **USDC.e** (Bridged USDC,
+  `0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174`) on Polygon. If the user holds
+  native USDC (`0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359`), they must swap
+  to USDC.e first via Uniswap V3 on Polygon
+  (SwapRouter: `0xE592427A0AEce92De3Edee1F18E0157C05861564`).
+  Direct link: https://app.uniswap.org/swap?chain=polygon&inputCurrency=0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359&outputCurrency=0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174
 
 ---
 
