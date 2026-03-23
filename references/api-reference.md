@@ -130,16 +130,16 @@ Optional: `eventSlug` (string) — override default current-month event.
     {
       "strikePrice": 90000,
       "direction": "UP",
-      "groupItemTitle": "↑ $90,000",
+      "groupItemTitle": "↑ 90,000",
       "buyDirection": "YES",
       "tokenId": "12345...",
       "weight": 0.35,
       "allocation": 35.00
     }
   ],
-  "droppedStrikes": ["↑ $120,000"],
+  "droppedStrikes": ["↑ 120,000"],
   "resolvedStrikes": [
-    { "strikePrice": 75000, "direction": "UP", "groupItemTitle": "↑ $75,000" }
+    { "strikePrice": 75000, "direction": "UP", "groupItemTitle": "↑ 75,000" }
   ],
   "minimumDepositRequired": 5,
   "eventTitle": "What price will Bitcoin hit in March?"
@@ -158,7 +158,8 @@ Optional: `eventSlug` (string) — override default current-month event.
 
 ### POST /index/invest
 
-Execute index investment.
+Execute index investment. Uses FAK (Fill-and-Kill) market orders that fill
+immediately against available liquidity.
 
 **Request:**
 
@@ -181,7 +182,7 @@ Optional: `eventSlug`.
     {
       "strikePrice": 90000,
       "direction": "UP",
-      "groupItemTitle": "↑ $90,000",
+      "groupItemTitle": "↑ 90,000",
       "buyDirection": "YES",
       "tokenId": "12345...",
       "weight": 0.35,
@@ -190,8 +191,7 @@ Optional: `eventSlug`.
       "orderStatus": "FILLED"
     }
   ],
-  "droppedStrikes": ["↑ $120,000"],
-  "hasPlacedOrders": false,
+  "droppedStrikes": ["↑ 120,000"],
   "overallStatus": "SUCCESS",
   "eventTitle": "What price will Bitcoin hit in March?",
   "createdAt": "2026-03-12T08:00:00.000Z"
@@ -200,7 +200,6 @@ Optional: `eventSlug`.
 
 | Field | Description |
 |-------|-------------|
-| hasPlacedOrders | true if any allocation has orderStatus "PLACED" |
 | overallStatus | SUCCESS (no failures) / PARTIAL (some failed) / FAILED (all failed) |
 
 **Errors:**
@@ -208,7 +207,7 @@ Optional: `eventSlug`.
 | HTTP | Message |
 |------|---------|
 | 400 | Insufficient balance |
-| 400 | Amount below minimum ($10) |
+| 400 | Minimum investment is $10 |
 | 400 | No active markets available |
 
 ### GET /index/positions/:userId
@@ -294,12 +293,12 @@ Hourly BTC price data + strike price lines.
     {
       "strikePrice": 90000,
       "direction": "UP",
-      "groupItemTitle": "↑ $90,000",
+      "groupItemTitle": "↑ 90,000",
       "resolved": false,
       "hitDate": null
     }
   ],
-  "nextStrike": "↑ $90,000",
+  "nextStrike": "↑ 90,000",
   "resolved": "1/3",
   "eventTitle": "What price will Bitcoin hit in March?"
 }

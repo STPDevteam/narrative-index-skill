@@ -103,6 +103,10 @@ Upload via the `/v1/skills` endpoint. See the [Skills API documentation](https:/
 | `get_portfolio` | `GET /portfolio?userId=` | NAV/PnL/totalReturn dashboard |
 | `get_returns` | `GET /performance/returns?month=` | Monthly daily return data |
 | `withdraw` | `POST /wallets/withdraw` | Withdraw from Safe to external address |
+| `get_btc_chart` | `GET /chart/btc-strikes` | BTC price + strike lines chart data |
+| `get_accounting_positions` | `GET /accounting/:userId/positions` | Positions with unrealized PnL |
+| `get_trades` | `GET /accounting/:userId/trades` | Trade history |
+| `get_pnl` | `GET /accounting/:userId/pnl` | P&L report |
 
 ## API Base URL
 

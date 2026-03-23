@@ -108,8 +108,9 @@ curl -X POST https://api.polyvaults.ai/index/preview \
 
 ### 5. invest_index
 
-Execute the index investment. Places FAK market orders for each qualified
-strike from the user's Safe balance.
+Execute the index investment. Places FAK (Fill-and-Kill) market orders for
+each qualified strike from the user's Safe balance. Orders fill immediately
+against available liquidity; any unfilled portion is cancelled.
 
 ```
 POST /index/invest
@@ -117,7 +118,7 @@ Body: { "userId": "...", "indexType": "BULLISH"|"BEARISH", "amount": 100 }
 ```
 
 Returns `depositId`, `allocations[]` (with `orderId`, `orderStatus`),
-`hasPlacedOrders`, `overallStatus` (SUCCESS / PARTIAL / FAILED).
+`overallStatus` (SUCCESS / PARTIAL / FAILED).
 
 ```bash
 curl -X POST https://api.polyvaults.ai/index/invest \
@@ -207,6 +208,68 @@ Query withdrawal fee beforehand with `GET /wallets/withdraw-fee`.
 
 ---
 
+### 10. get_btc_chart
+
+Hourly BTC price data with strike price lines for visualization.
+
+```
+GET /chart/btc-strikes?indexType=BULLISH
+```
+
+Optional query params: `eventSlug`, `from`, `to` (ISO 8601).
+
+Returns `priceData[]`, `strikePrices[]`, `nextStrike`, `resolved`,
+`eventTitle`.
+
+```bash
+curl 'https://api.polyvaults.ai/chart/btc-strikes?indexType=BULLISH'
+```
+
+---
+
+### 11. get_accounting_positions
+
+Current positions with unrealized PnL breakdown.
+
+```
+GET /accounting/:userId/positions
+```
+
+```bash
+curl https://api.polyvaults.ai/accounting/{userId}/positions
+```
+
+---
+
+### 12. get_trades
+
+Trade history for the user.
+
+```
+GET /accounting/:userId/trades?limit=50
+```
+
+```bash
+curl 'https://api.polyvaults.ai/accounting/{userId}/trades?limit=50'
+```
+
+---
+
+### 13. get_pnl
+
+P&L report: totalDeposits, totalWithdrawals, currentBalance,
+totalRealizedPnL, totalUnrealizedPnL, returnPercentage.
+
+```
+GET /accounting/:userId/pnl
+```
+
+```bash
+curl https://api.polyvaults.ai/accounting/{userId}/pnl
+```
+
+---
+
 ## Common Workflows
 
 ### Workflow 1 — New User Deposit & Invest
@@ -242,6 +305,8 @@ Query withdrawal fee beforehand with `GET /wallets/withdraw-fee`.
 - **Minimum investment**: $10 total. Individual strike allocations must be
   >= $1 and >= 5 shares.
 - **Order type**: FAK (Fill-and-Kill) market orders, executed gaslessly.
+  Orders fill immediately against available liquidity; unfilled remainder
+  is cancelled. No orders stay pending on the order book.
 - **Settlement**: Monthly, on the last day at UTC 23:59.
 - **Weight formula**: Proprietary algorithm based on market liquidity,
   ensuring diversified allocation across strikes.
@@ -261,7 +326,7 @@ Query withdrawal fee beforehand with `GET /wallets/withdraw-fee`.
 | HTTP | Message | Action |
 |------|---------|--------|
 | 400 | "Insufficient balance" | Ask user to deposit more USDC.e |
-| 400 | "Amount below minimum" | Use at least $10 for invest |
+| 400 | "Minimum investment is $10" | Use at least $10 for invest |
 | 400 | "No active markets" | Current month event not yet live; try later |
 | 400 | "Only the last 6 months are available" | Adjust `month` param |
 | 500 | Server error | Retry once; if persistent, report to user |
