@@ -94,38 +94,91 @@ to USDC.e when investing.
 
 ### POST /wallets/withdraw
 
+Supports Polygon local transfer and cross-chain withdrawal via Polymarket Bridge.
+
 **Request:**
 
 ```json
-{ "userId": "uuid", "toAddress": "0x...", "amount": 100, "token": "USDC" }
+{ "userId": "uuid", "toAddress": "0x...", "amount": 100, "chain": "ethereum" }
 ```
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | userId | string | Yes | User ID |
-| toAddress | string | Yes | Polygon address |
+| toAddress | string | Yes | Destination address (EVM `0x...` or Solana base58) |
 | amount | number | Yes | Amount in dollars, min $0.01 |
-| token | string | No | `"USDC"` or `"USDC.e"` (default `"USDC.e"`) |
+| token | string | No | Polygon only: `"USDC"` or `"USDC.e"` (default `"USDC.e"`) |
+| chain | string | No | Target chain (default `"polygon"`). Options: `polygon`, `ethereum`, `arbitrum`, `base`, `optimism`, `bsc`, `solana` |
 
-If the chosen token balance is insufficient but the other token has balance,
-an automatic swap is performed before withdrawal.
+For Polygon: auto-swaps between USDC/USDC.e if needed.
+For cross-chain: consolidates to USDC.e, sends to Bridge deposit address.
 
-**Response (success):**
+**Response — Polygon:**
 
 ```json
 {
-  "transactionHash": "0xabc123...",
-  "from": "0x...",
-  "to": "0x...",
-  "amount": "100.000000",
-  "status": "SUBMITTED"
+  "transactionHash": "0x...", "from": "0x...", "to": "0x...",
+  "amount": "100.000000", "status": "SUBMITTED"
 }
 ```
 
-**Error (insufficient balance):**
+**Response — Cross-chain:**
 
 ```json
-{ "statusCode": 400, "message": "Insufficient balance. Available: $50.00 (30.00 USDC.e + 20.00 USDC), Requested: $100" }
+{
+  "transactionHash": "0x...", "from": "0x...", "to": "0x...",
+  "amount": "100.000000", "status": "BRIDGING",
+  "chain": "Ethereum", "bridgeDepositAddress": "0x..."
+}
+```
+
+### POST /wallets/withdraw-quote
+
+Preview cross-chain fees and estimated arrival time.
+
+```json
+{ "userId": "uuid", "amount": 100, "chain": "ethereum" }
+```
+
+**Response:**
+
+```json
+{
+  "chain": "Ethereum", "inputAmount": 100, "estimatedOutput": 99.99,
+  "estimatedOutputBaseUnit": "99990000",
+  "fees": { "gasUsd": 0.003, "totalImpactUsd": 0 },
+  "estimatedTimeMs": 25000, "minWithdrawal": 7
+}
+```
+
+### GET /wallets/withdraw-status/:address
+
+Track cross-chain withdrawal using `bridgeDepositAddress`.
+
+**Response:**
+
+```json
+{
+  "transactions": [{
+    "fromChainId": "137", "toChainId": "1",
+    "fromAmountBaseUnit": "100000000",
+    "status": "COMPLETED", "txHash": "0x..."
+  }]
+}
+```
+
+Statuses: `DEPOSIT_DETECTED` → `PROCESSING` → `ORIGIN_TX_CONFIRMED` → `SUBMITTED` → `COMPLETED` | `FAILED`
+
+### GET /wallets/supported-chains
+
+Lists supported withdrawal chains.
+
+```json
+[
+  { "id": "polygon", "name": "Polygon", "chainId": "137", "minWithdrawal": 2, "addressType": "evm" },
+  { "id": "ethereum", "name": "Ethereum", "chainId": "1", "minWithdrawal": 7, "addressType": "evm" },
+  { "id": "solana", "name": "Solana", "chainId": "1151111081099710", "minWithdrawal": 2, "addressType": "svm" }
+]
 ```
 
 ---

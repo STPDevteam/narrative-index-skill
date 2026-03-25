@@ -200,23 +200,58 @@ curl 'https://api.polyvaults.ai/performance/returns?month=2026-03'
 
 ### 9. withdraw
 
-Withdraw from the user's Safe wallet to an external address. Supports
-withdrawing either USDC (native) or USDC.e (bridged). If the chosen token
-balance is insufficient, the platform auto-swaps from the other token.
+Withdraw from the user's Safe wallet. Supports Polygon local transfers and
+cross-chain withdrawals via the Polymarket Bridge (Ethereum, Arbitrum, Base,
+Optimism, BSC, Solana).
 
 ```
 POST /wallets/withdraw
-Body: { "userId": "...", "toAddress": "0x...", "amount": 100, "token": "USDC" }
+Body: { "userId": "...", "toAddress": "0x...", "amount": 100, "chain": "ethereum" }
 ```
 
-- `token` (optional): `"USDC"` or `"USDC.e"`. Defaults to `"USDC.e"`.
+- `token` (optional): `"USDC"` or `"USDC.e"`. Only applies to Polygon withdrawals. Defaults to `"USDC.e"`.
+- `chain` (optional): Target chain. Defaults to `"polygon"`. Supported: `polygon`, `ethereum`, `arbitrum`, `base`, `optimism`, `bsc`, `solana`.
 
-Returns `transactionHash`, `status` ("SUBMITTED").
+Returns `transactionHash`, `status` ("SUBMITTED" for Polygon, "BRIDGING" for cross-chain).
+Cross-chain responses also include `chain` and `bridgeDepositAddress` for status tracking.
 
 ```bash
+# Polygon withdrawal
 curl -X POST https://api.polyvaults.ai/wallets/withdraw \
   -H 'Content-Type: application/json' \
   -d '{"userId":"abc-123","toAddress":"0xdead...","amount":100,"token":"USDC"}'
+
+# Cross-chain withdrawal to Ethereum
+curl -X POST https://api.polyvaults.ai/wallets/withdraw \
+  -H 'Content-Type: application/json' \
+  -d '{"userId":"abc-123","toAddress":"0xdead...","amount":100,"chain":"ethereum"}'
+```
+
+### 9a. withdraw_quote
+
+Preview cross-chain withdrawal fees and estimated time.
+
+```
+POST /wallets/withdraw-quote
+Body: { "userId": "...", "amount": 100, "chain": "ethereum" }
+```
+
+### 9b. withdraw_status
+
+Track cross-chain withdrawal progress using the `bridgeDepositAddress`.
+
+```
+GET /wallets/withdraw-status/:address
+```
+
+Status flow: `DEPOSIT_DETECTED` → `PROCESSING` → `ORIGIN_TX_CONFIRMED` → `SUBMITTED` → `COMPLETED`.
+
+### 9c. supported_chains
+
+List all supported withdrawal chains with minimum amounts.
+
+```
+GET /wallets/supported-chains
 ```
 
 Query withdrawal fee beforehand with `GET /wallets/withdraw-fee`.
@@ -305,7 +340,7 @@ curl https://api.polyvaults.ai/accounting/{userId}/pnl
 2. **get_returns** — show daily index returns vs BTC for the relevant month
 3. **get_positions** — show per-strike breakdown if the user wants details
 
-### Workflow 3 — Withdraw Funds
+### Workflow 3 — Withdraw Funds (Polygon)
 
 1. **get_wallet_balance** — confirm available balance (USDC.e + native USDC)
 2. Ask the user which token to withdraw: USDC or USDC.e (default USDC.e)
@@ -313,6 +348,15 @@ curl https://api.polyvaults.ai/accounting/{userId}/pnl
    (`GET /wallets/withdraw-fee` for exact rate)
 4. **withdraw** — execute with `token` param; return `transactionHash` for
    on-chain tracking
+
+### Workflow 4 — Cross-Chain Withdraw
+
+1. **get_wallet_balance** — confirm available balance
+2. **supported_chains** — show the user available chains and minimums
+3. **withdraw_quote** — preview fees and estimated arrival time
+4. **withdraw** — execute with `chain` param (e.g. `"ethereum"`, `"solana"`)
+5. **withdraw_status** — use returned `bridgeDepositAddress` to track progress
+   Status flow: DEPOSIT_DETECTED → PROCESSING → COMPLETED
 
 ---
 

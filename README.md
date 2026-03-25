@@ -9,7 +9,7 @@ This Skill enables AI agents (Claude, Cursor, etc.) to autonomously manage the f
 - **Wallet management** — create Safe wallets, check balances, get deposit addresses
 - **Index investing** — preview allocations, execute BTC Bullish/Bearish index orders
 - **Portfolio monitoring** — NAV, PnL, total return, daily performance data
-- **Withdrawals** — withdraw USDC or USDC.e to external wallets
+- **Withdrawals** — withdraw to Polygon or cross-chain (ETH, Arbitrum, Base, Optimism, BSC, Solana)
 
 ## Installation
 
@@ -102,7 +102,10 @@ Upload via the `/v1/skills` endpoint. See the [Skills API documentation](https:/
 | `get_positions` | `GET /index/positions/:userId` | View index positions |
 | `get_portfolio` | `GET /portfolio?userId=` | NAV/PnL/totalReturn dashboard |
 | `get_returns` | `GET /performance/returns?month=` | Monthly daily return data |
-| `withdraw` | `POST /wallets/withdraw` | Withdraw USDC or USDC.e to external address |
+| `withdraw` | `POST /wallets/withdraw` | Withdraw to Polygon or cross-chain (7 chains) |
+| `withdraw_quote` | `POST /wallets/withdraw-quote` | Preview cross-chain fees and ETA |
+| `withdraw_status` | `GET /wallets/withdraw-status/:addr` | Track cross-chain withdrawal progress |
+| `supported_chains` | `GET /wallets/supported-chains` | List supported withdrawal chains |
 | `get_btc_chart` | `GET /chart/btc-strikes` | BTC price + strike lines chart data |
 | `get_accounting_positions` | `GET /accounting/:userId/positions` | Positions with unrealized PnL |
 | `get_trades` | `GET /accounting/:userId/trades` | Trade history |
