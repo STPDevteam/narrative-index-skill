@@ -20,7 +20,7 @@ Polymarket Builder Program.
 
 - **Base URL**: `https://api.polyvaults.ai`
 - **Network**: Polygon
-- **Collateral**: USDC.e
+- **Collateral**: USDC.e (bridged) and USDC (native) — auto-converted
 - **Auth model**: All requests identify the user by `userId` (UUID), obtained
   through `connect_wallet`.
 
@@ -53,13 +53,15 @@ curl -X POST https://api.polyvaults.ai/auth/connect \
 
 ### 2. get_wallet_balance
 
-Query available USDC.e balance in the user's Safe wallet.
+Query the user's Safe wallet balance, including both USDC.e (bridged) and
+native USDC.
 
 ```
 GET /wallets/:userId/balance
 ```
 
-Returns `formattedBalance` (human-readable dollar string).
+Returns `formattedBalance` (USDC.e), `formattedNativeBalance` (native USDC),
+and `totalBalance` (sum of both).
 
 ```bash
 curl https://api.polyvaults.ai/wallets/{userId}/balance
@@ -69,13 +71,15 @@ curl https://api.polyvaults.ai/wallets/{userId}/balance
 
 ### 3. get_deposit_address
 
-Get the Safe wallet address where the user should send USDC.e.
+Get the Safe wallet address where the user should send USDC or USDC.e.
+Both are accepted; native USDC is automatically converted to USDC.e when
+investing.
 
 ```
 GET /wallets/:userId/deposit-address
 ```
 
-Returns `address`, `network` ("Polygon"), `token` ("USDC").
+Returns `address`, `network` ("Polygon"), `token` ("USDC / USDC.e").
 
 ```bash
 curl https://api.polyvaults.ai/wallets/{userId}/deposit-address
@@ -90,18 +94,22 @@ Only strikes meeting the $1 minimum are returned.
 
 ```
 POST /index/preview
-Body: { "indexType": "BULLISH"|"BEARISH", "amount": 100 }
+Body: { "indexType": "BULLISH"|"BEARISH", "amount": 100, "userId": "..." }
 ```
 
-Optional field `eventSlug` overrides the default current-month event.
+Optional fields:
+- `eventSlug` — override the default current-month event
+- `userId` — when provided, the backend checks if a USDC→USDC.e swap is
+  needed and calculates the swap fee (0.1%). Allocations are computed using
+  the amount after fee deduction.
 
-Returns `allocations[]` (weight, allocation per strike), `droppedStrikes`,
-`resolvedStrikes`, `minimumDepositRequired`.
+Returns `allocations[]`, `droppedStrikes`, `resolvedStrikes`,
+`minimumDepositRequired`, `effectiveAmount`, `swapFee`.
 
 ```bash
 curl -X POST https://api.polyvaults.ai/index/preview \
   -H 'Content-Type: application/json' \
-  -d '{"indexType":"BULLISH","amount":100}'
+  -d '{"indexType":"BULLISH","amount":100,"userId":"abc-123"}'
 ```
 
 ---
@@ -111,6 +119,10 @@ curl -X POST https://api.polyvaults.ai/index/preview \
 Execute the index investment. Places FAK (Fill-and-Kill) market orders for
 each qualified strike from the user's Safe balance. Orders fill immediately
 against available liquidity; any unfilled portion is cancelled.
+
+If the user's USDC.e balance is insufficient but they hold native USDC, the
+platform automatically swaps the needed amount via Uniswap V3 before placing
+orders.
 
 ```
 POST /index/invest
@@ -188,20 +200,23 @@ curl 'https://api.polyvaults.ai/performance/returns?month=2026-03'
 
 ### 9. withdraw
 
-Withdraw USDC.e from the user's Safe wallet to an external address.
-A 1% fee applies.
+Withdraw from the user's Safe wallet to an external address. Supports
+withdrawing either USDC (native) or USDC.e (bridged). If the chosen token
+balance is insufficient, the platform auto-swaps from the other token.
 
 ```
 POST /wallets/withdraw
-Body: { "userId": "...", "toAddress": "0x...", "amount": 100 }
+Body: { "userId": "...", "toAddress": "0x...", "amount": 100, "token": "USDC" }
 ```
+
+- `token` (optional): `"USDC"` or `"USDC.e"`. Defaults to `"USDC.e"`.
 
 Returns `transactionHash`, `status` ("SUBMITTED").
 
 ```bash
 curl -X POST https://api.polyvaults.ai/wallets/withdraw \
   -H 'Content-Type: application/json' \
-  -d '{"userId":"abc-123","toAddress":"0xdead...","amount":100}'
+  -d '{"userId":"abc-123","toAddress":"0xdead...","amount":100,"token":"USDC"}'
 ```
 
 Query withdrawal fee beforehand with `GET /wallets/withdraw-fee`.
@@ -275,11 +290,12 @@ curl https://api.polyvaults.ai/accounting/{userId}/pnl
 ### Workflow 1 — New User Deposit & Invest
 
 1. **connect_wallet** — obtain `userId` and `depositAddress`
-2. Instruct the user to transfer USDC.e to `depositAddress` on Polygon
-3. **get_wallet_balance** — confirm deposit arrived
-4. **preview_index** — show allocation breakdown; let user choose BULLISH or
-   BEARISH and confirm the amount
-5. **invest_index** — execute; check `overallStatus`
+2. Instruct the user to transfer USDC or USDC.e to `depositAddress` on Polygon
+   (both accepted; native USDC is auto-converted when investing)
+3. **get_wallet_balance** — confirm deposit arrived; show `totalBalance`
+4. **preview_index** — pass `userId` to see swap fees if applicable; let user
+   choose BULLISH or BEARISH and confirm the amount
+5. **invest_index** — execute; auto-swap happens if needed; check `overallStatus`
    - If `PARTIAL`, inform the user which strikes failed
    - If `FAILED`, check balance and retry
 
@@ -291,10 +307,12 @@ curl https://api.polyvaults.ai/accounting/{userId}/pnl
 
 ### Workflow 3 — Withdraw Funds
 
-1. **get_wallet_balance** — confirm available balance
-2. Inform the user about the 1% withdrawal fee
+1. **get_wallet_balance** — confirm available balance (USDC.e + native USDC)
+2. Ask the user which token to withdraw: USDC or USDC.e (default USDC.e)
+3. Inform the user about the 1% withdrawal fee
    (`GET /wallets/withdraw-fee` for exact rate)
-3. **withdraw** — execute; return `transactionHash` for on-chain tracking
+4. **withdraw** — execute with `token` param; return `transactionHash` for
+   on-chain tracking
 
 ---
 
@@ -312,12 +330,12 @@ curl https://api.polyvaults.ai/accounting/{userId}/pnl
   ensuring diversified allocation across strikes.
 - **Safe wallet**: Platform-managed Gnosis Safe on Polygon. Users never hold
   private keys; the platform signs via encrypted EOA owner keys.
-- **USDC.e required**: The platform only accepts **USDC.e** (Bridged USDC,
-  `0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174`) on Polygon. If the user holds
-  native USDC (`0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359`), they must swap
-  to USDC.e first via Uniswap V3 on Polygon
-  (SwapRouter: `0xE592427A0AEce92De3Edee1F18E0157C05861564`).
-  Direct link: https://app.uniswap.org/swap?chain=polygon&inputCurrency=0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359&outputCurrency=0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174
+- **Dual USDC support**: The platform accepts both **USDC.e** (Bridged USDC,
+  `0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174`) and **native USDC**
+  (`0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359`) on Polygon. When investing,
+  native USDC is automatically converted to USDC.e via Uniswap V3 (0.1% swap
+  fee). Withdrawals support choosing either token. Users can deposit either
+  token without manual conversion.
 
 ---
 
@@ -325,7 +343,7 @@ curl https://api.polyvaults.ai/accounting/{userId}/pnl
 
 | HTTP | Message | Action |
 |------|---------|--------|
-| 400 | "Insufficient balance" | Ask user to deposit more USDC.e |
+| 400 | "Insufficient balance" | Ask user to deposit more USDC or USDC.e |
 | 400 | "Minimum investment is $10" | Use at least $10 for invest |
 | 400 | "No active markets" | Current month event not yet live; try later |
 | 400 | "Only the last 6 months are available" | Adjust `month` param |

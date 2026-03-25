@@ -48,7 +48,7 @@ Register or log in.
 |-------|-------------|
 | userId | Unique user ID for all subsequent calls |
 | safeAddress | Platform-managed Safe wallet |
-| depositAddress | Same as safeAddress; send USDC.e here |
+| depositAddress | Same as safeAddress; send USDC or USDC.e here |
 | isNewUser | true on first connect |
 
 ---
@@ -62,14 +62,29 @@ Full wallet info (ownerAddress, safeAddress, isDeployed, isApproved).
 ### GET /wallets/:userId/balance
 
 ```json
-{ "usdcBalance": "1500000000", "formattedBalance": "1500.00" }
+{
+  "usdcBalance": "1500000000",
+  "formattedBalance": "1500.00",
+  "nativeUsdcBalance": "500000000",
+  "formattedNativeBalance": "500.00",
+  "totalBalance": "2000.000000"
+}
 ```
+
+| Field | Description |
+|-------|-------------|
+| usdcBalance / formattedBalance | USDC.e (bridged) balance |
+| nativeUsdcBalance / formattedNativeBalance | Native USDC balance |
+| totalBalance | Sum of both |
 
 ### GET /wallets/:userId/deposit-address
 
 ```json
-{ "address": "0x...", "network": "Polygon", "token": "USDC" }
+{ "address": "0x...", "network": "Polygon", "token": "USDC / USDC.e" }
 ```
+
+Both USDC and USDC.e deposits are accepted. Native USDC is auto-converted
+to USDC.e when investing.
 
 ### GET /wallets/withdraw-fee
 
@@ -82,8 +97,18 @@ Full wallet info (ownerAddress, safeAddress, isDeployed, isApproved).
 **Request:**
 
 ```json
-{ "userId": "uuid", "toAddress": "0x...", "amount": 100 }
+{ "userId": "uuid", "toAddress": "0x...", "amount": 100, "token": "USDC" }
 ```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| userId | string | Yes | User ID |
+| toAddress | string | Yes | Polygon address |
+| amount | number | Yes | Amount in dollars, min $0.01 |
+| token | string | No | `"USDC"` or `"USDC.e"` (default `"USDC.e"`) |
+
+If the chosen token balance is insufficient but the other token has balance,
+an automatic swap is performed before withdrawal.
 
 **Response (success):**
 
@@ -100,7 +125,7 @@ Full wallet info (ownerAddress, safeAddress, isDeployed, isApproved).
 **Error (insufficient balance):**
 
 ```json
-{ "statusCode": 400, "message": "Insufficient balance. Available: $50.00, Requested: $100" }
+{ "statusCode": 400, "message": "Insufficient balance. Available: $50.00 (30.00 USDC.e + 20.00 USDC), Requested: $100" }
 ```
 
 ---
@@ -114,10 +139,15 @@ Preview strike allocation before investing.
 **Request:**
 
 ```json
-{ "indexType": "BULLISH", "amount": 100 }
+{ "indexType": "BULLISH", "amount": 100, "userId": "abc-123" }
 ```
 
-Optional: `eventSlug` (string) — override default current-month event.
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| indexType | enum | Yes | BULLISH or BEARISH |
+| amount | number | Yes | Investment amount ($), min 10 |
+| eventSlug | string | No | Override default current-month event |
+| userId | string | No | When provided, calculates swap fee if USDC→USDC.e conversion is needed |
 
 **Response:**
 
@@ -125,7 +155,9 @@ Optional: `eventSlug` (string) — override default current-month event.
 {
   "indexType": "BULLISH",
   "totalDeposit": 100,
-  "totalAllocated": 100,
+  "effectiveAmount": 99.95,
+  "swapFee": 0.05,
+  "totalAllocated": 99.95,
   "allocations": [
     {
       "strikePrice": 90000,
@@ -134,7 +166,7 @@ Optional: `eventSlug` (string) — override default current-month event.
       "buyDirection": "YES",
       "tokenId": "12345...",
       "weight": 0.35,
-      "allocation": 35.00
+      "allocation": 34.98
     }
   ],
   "droppedStrikes": ["↑ 120,000"],
@@ -148,9 +180,12 @@ Optional: `eventSlug` (string) — override default current-month event.
 
 | Field | Description |
 |-------|-------------|
+| totalDeposit | Requested investment amount |
+| effectiveAmount | Amount after deducting swap fee (= totalDeposit if no swap needed) |
+| swapFee | Swap fee (0.1% of USDC amount needing conversion; 0 if no swap) |
 | allocations | Strikes passing iterative pruning (each >= $1) |
 | weight | Proportion of total weight (0–1) |
-| allocation | Dollar amount assigned |
+| allocation | Dollar amount assigned (based on effectiveAmount) |
 | buyDirection | YES or NO |
 | droppedStrikes | Active strikes pruned due to insufficient allocation |
 | resolvedStrikes | Already-settled strikes (all directions) |
@@ -159,7 +194,9 @@ Optional: `eventSlug` (string) — override default current-month event.
 ### POST /index/invest
 
 Execute index investment. Uses FAK (Fill-and-Kill) market orders that fill
-immediately against available liquidity.
+immediately against available liquidity. If USDC.e balance is insufficient
+but native USDC is available, an automatic Uniswap V3 swap is performed
+before placing orders.
 
 **Request:**
 
@@ -206,7 +243,7 @@ Optional: `eventSlug`.
 
 | HTTP | Message |
 |------|---------|
-| 400 | Insufficient balance |
+| 400 | Insufficient balance (USDC.e + native USDC combined) |
 | 400 | Minimum investment is $10 |
 | 400 | No active markets available |
 
@@ -341,7 +378,7 @@ strikePrices includes both UP and DOWN directions regardless of indexType.
 |-------|-------------|
 | nav | Net asset value = position market value + available balance |
 | deployedPrincipal | Sum of all FILLED index investments |
-| availableBalance | USDC.e available in Safe wallet |
+| availableBalance | Total USDC available in Safe wallet (USDC.e + native USDC) |
 | pnl | Current market value of positions - deployed principal |
 | totalReturn | pnl / deployedPrincipal (0.0205 = 2.05%) |
 

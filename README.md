@@ -9,7 +9,7 @@ This Skill enables AI agents (Claude, Cursor, etc.) to autonomously manage the f
 - **Wallet management** — create Safe wallets, check balances, get deposit addresses
 - **Index investing** — preview allocations, execute BTC Bullish/Bearish index orders
 - **Portfolio monitoring** — NAV, PnL, total return, daily performance data
-- **Withdrawals** — withdraw USDC.e to external wallets
+- **Withdrawals** — withdraw USDC or USDC.e to external wallets
 
 ## Installation
 
@@ -95,14 +95,14 @@ Upload via the `/v1/skills` endpoint. See the [Skills API documentation](https:/
 | Tool | Endpoint | Description |
 |------|----------|-------------|
 | `connect_wallet` | `POST /auth/connect` | Register/login, returns userId and Safe address |
-| `get_wallet_balance` | `GET /wallets/:userId/balance` | Query USDC.e available balance |
-| `get_deposit_address` | `GET /wallets/:userId/deposit-address` | Get deposit address |
-| `preview_index` | `POST /index/preview` | Preview strike allocations |
-| `invest_index` | `POST /index/invest` | Execute index investment |
+| `get_wallet_balance` | `GET /wallets/:userId/balance` | Query USDC.e + native USDC balance |
+| `get_deposit_address` | `GET /wallets/:userId/deposit-address` | Get deposit address (accepts USDC & USDC.e) |
+| `preview_index` | `POST /index/preview` | Preview strike allocations (optional userId for swap fee) |
+| `invest_index` | `POST /index/invest` | Execute index investment (auto-swaps USDC if needed) |
 | `get_positions` | `GET /index/positions/:userId` | View index positions |
 | `get_portfolio` | `GET /portfolio?userId=` | NAV/PnL/totalReturn dashboard |
 | `get_returns` | `GET /performance/returns?month=` | Monthly daily return data |
-| `withdraw` | `POST /wallets/withdraw` | Withdraw from Safe to external address |
+| `withdraw` | `POST /wallets/withdraw` | Withdraw USDC or USDC.e to external address |
 | `get_btc_chart` | `GET /chart/btc-strikes` | BTC price + strike lines chart data |
 | `get_accounting_positions` | `GET /accounting/:userId/positions` | Positions with unrealized PnL |
 | `get_trades` | `GET /accounting/:userId/trades` | Trade history |
