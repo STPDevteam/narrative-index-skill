@@ -23,6 +23,13 @@ Polymarket Builder Program.
 - **Collateral**: USDC.e (bridged) and USDC (native) — auto-converted
 - **Auth model**: All requests identify the user by `userId` (UUID), obtained
   through `connect_wallet`.
+- **Signature auth**: Write endpoints (`invest`, `withdraw`, `redeem`) require
+  EIP-712 typed data signatures from the user's connected wallet.
+- **Geo-restriction**: Write endpoints return HTTP 403 (`GEO_RESTRICTED`) for
+  requests from US IP addresses (detected via Cloudflare `cf-ipcountry` header).
+  Read-only endpoints are unaffected.
+- **Key encryption**: Wallet private keys are encrypted at rest using AWS KMS
+  (AES-256 symmetric encryption via AWS KMS API).
 
 For full endpoint schemas see [references/api-reference.md](references/api-reference.md).
 For strategy mechanics see [references/strategy-guide.md](references/strategy-guide.md).
@@ -124,9 +131,11 @@ If the user's USDC.e balance is insufficient but they hold native USDC, the
 platform automatically swaps the needed amount via Uniswap V3 before placing
 orders.
 
+> Requires EIP-712 signature. See [api-reference.md](references/api-reference.md#signature-authentication) for signing details.
+
 ```
 POST /index/invest
-Body: { "userId": "...", "indexType": "BULLISH"|"BEARISH", "amount": 100 }
+Body: { "userId": "...", "indexType": "BULLISH"|"BEARISH", "amount": 100, "signature": "0x...", "nonce": 1740643200000 }
 ```
 
 Returns `depositId`, `allocations[]` (with `orderId`, `orderStatus`),
@@ -135,7 +144,7 @@ Returns `depositId`, `allocations[]` (with `orderId`, `orderStatus`),
 ```bash
 curl -X POST https://api.polyvaults.ai/index/invest \
   -H 'Content-Type: application/json' \
-  -d '{"userId":"abc-123","indexType":"BULLISH","amount":100}'
+  -d '{"userId":"abc-123","indexType":"BULLISH","amount":100,"signature":"0x...","nonce":1740643200000}'
 ```
 
 ---
@@ -169,8 +178,11 @@ GET /portfolio?userId=...&indexFilter=ALL&timeRange=24h
 - `indexFilter`: ALL | BULLISH | BEARISH
 - `timeRange`: 24h | 7d | 30d | all
 
-Returns `nav`, `deployedPrincipal`, `availableBalance`, `pnl`,
-`totalReturn`, `returnChart[]`.
+Returns `nav`, `deployedPrincipal`, `availableBalance`, `unrealizedPnl`,
+`realizedPnl`, `pnl`, `totalReturn`, `returnChart[]`.
+
+- `deployedPrincipal` includes both active and redeemed positions' cost.
+- `realizedPnl` tracks profit/loss from redeemed and auto-settled positions.
 
 ```bash
 curl 'https://api.polyvaults.ai/portfolio?userId=abc-123&timeRange=7d'
@@ -204,9 +216,11 @@ Withdraw from the user's Safe wallet. Supports Polygon local transfers and
 cross-chain withdrawals via the Polymarket Bridge (Ethereum, Arbitrum, Base,
 Optimism, BSC, Solana).
 
+> Requires EIP-712 signature.
+
 ```
 POST /wallets/withdraw
-Body: { "userId": "...", "toAddress": "0x...", "amount": 100, "chain": "ethereum" }
+Body: { "userId": "...", "toAddress": "0x...", "amount": 100, "chain": "ethereum", "signature": "0x...", "nonce": 1740643200000 }
 ```
 
 - `token` (optional): `"USDC"` or `"USDC.e"`. Only applies to Polygon withdrawals. Defaults to `"USDC.e"`.
@@ -320,6 +334,49 @@ curl https://api.polyvaults.ai/accounting/{userId}/pnl
 
 ---
 
+### 14. early_redeem
+
+Market-sell all active positions for a given direction (BULLISH or BEARISH).
+A 2% fee is charged on any profit and sent to the platform fee address.
+
+Resolved positions are automatically redeemed by a cron job every hour —
+this endpoint is only for **early** (pre-settlement) redemption.
+
+> Requires EIP-712 signature.
+
+```
+POST /index/redeem
+Body: { "userId": "...", "direction": "BULLISH"|"BEARISH", "signature": "0x...", "nonce": 1740643200000 }
+```
+
+Returns `sold`, `totalReceived`, `totalCost`, `profit`, `fee`, `results[]`.
+
+```bash
+curl -X POST https://api.polyvaults.ai/index/redeem \
+  -H 'Content-Type: application/json' \
+  -d '{"userId":"abc-123","direction":"BULLISH","signature":"0x...","nonce":1740643200000}'
+```
+
+---
+
+### 15. get_portfolio_breakdown
+
+Get separate metrics for BULLISH and BEARISH directions: deployed principal,
+current position value, unrealized/realized PnL, and total return.
+
+```
+GET /portfolio/breakdown?userId=...
+```
+
+Returns `bullish` and `bearish`, each with `deployedPrincipal`,
+`positionValue`, `unrealizedPnl`, `realizedPnl`, `pnl`, `totalReturn`.
+
+```bash
+curl 'https://api.polyvaults.ai/portfolio/breakdown?userId=abc-123'
+```
+
+---
+
 ## Common Workflows
 
 ### Workflow 1 — New User Deposit & Invest
@@ -358,6 +415,13 @@ curl https://api.polyvaults.ai/accounting/{userId}/pnl
 5. **withdraw_status** — use returned `bridgeDepositAddress` to track progress
    Status flow: DEPOSIT_DETECTED → PROCESSING → COMPLETED
 
+### Workflow 5 — Early Redeem (Pre-Settlement Exit)
+
+1. **get_portfolio_breakdown** — show per-direction PnL to help decide which to redeem
+2. **early_redeem** — sell all positions for the chosen direction (BULLISH or BEARISH)
+3. Inform user of `profit`, `fee` (2% of profit if positive), and `totalReceived`
+4. Funds return to the Safe wallet as USDC.e
+
 ---
 
 ## Key Concepts
@@ -373,13 +437,18 @@ curl https://api.polyvaults.ai/accounting/{userId}/pnl
 - **Weight formula**: Proprietary algorithm based on market liquidity,
   ensuring diversified allocation across strikes.
 - **Safe wallet**: Platform-managed Gnosis Safe on Polygon. Users never hold
-  private keys; the platform signs via encrypted EOA owner keys.
+  private keys; the platform signs via encrypted EOA owner keys (AWS KMS).
 - **Dual USDC support**: The platform accepts both **USDC.e** (Bridged USDC,
   `0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174`) and **native USDC**
   (`0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359`) on Polygon. When investing,
   native USDC is automatically converted to USDC.e via Uniswap V3 (0.1% swap
   fee). Withdrawals support choosing either token. Users can deposit either
   token without manual conversion.
+- **Auto-redemption**: A cron job runs every hour to scan for resolved markets.
+  Winning CTF tokens are automatically redeemed to USDC.e, and a 2% profit fee
+  is collected. Users do not need to manually claim settled positions.
+- **Realized PnL tracking**: Both manual early redemption and auto-settlement
+  profits/losses are tracked via `realizedPnl` in portfolio metrics.
 
 ---
 
@@ -391,6 +460,9 @@ curl https://api.polyvaults.ai/accounting/{userId}/pnl
 | 400 | "Minimum investment is $10" | Use at least $10 for invest |
 | 400 | "No active markets" | Current month event not yet live; try later |
 | 400 | "Only the last 6 months are available" | Adjust `month` param |
+| 400 | "Signature expired" | Regenerate nonce (use `Date.now()`) and re-sign |
+| 401 | "Signature does not match" | User must sign with the wallet used at connect |
+| 403 | "GEO_RESTRICTED" | US IP detected; trading/withdrawals blocked by policy |
 | 500 | Server error | Retry once; if persistent, report to user |
 
 When an `invest_index` call returns `overallStatus: "PARTIAL"`, inspect

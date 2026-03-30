@@ -10,6 +10,8 @@ This Skill enables AI agents (Claude, Cursor, etc.) to autonomously manage the f
 - **Index investing** — preview allocations, execute BTC Bullish/Bearish index orders
 - **Portfolio monitoring** — NAV, PnL, total return, daily performance data
 - **Withdrawals** — withdraw to Polygon or cross-chain (ETH, Arbitrum, Base, Optimism, BSC, Solana)
+- **Early redemption** — market-sell active positions before settlement with 2% profit fee
+- **Auto-redemption** — resolved markets are automatically redeemed every hour
 
 ## Installation
 
@@ -110,6 +112,8 @@ Upload via the `/v1/skills` endpoint. See the [Skills API documentation](https:/
 | `get_accounting_positions` | `GET /accounting/:userId/positions` | Positions with unrealized PnL |
 | `get_trades` | `GET /accounting/:userId/trades` | Trade history |
 | `get_pnl` | `GET /accounting/:userId/pnl` | P&L report |
+| `early_redeem` | `POST /index/redeem` | Market-sell positions (requires signature) |
+| `get_portfolio_breakdown` | `GET /portfolio/breakdown` | Per-direction (Bullish/Bearish) metrics |
 
 ## API Base URL
 

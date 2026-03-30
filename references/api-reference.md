@@ -3,16 +3,21 @@
 > Base URL: `https://api.polyvaults.ai`
 >
 > All requests use JSON. Identify users by `userId` (UUID from `POST /auth/connect`).
+>
+> **Geo-restriction**: Write endpoints (invest, withdraw, redeem, orders, connect)
+> return HTTP 403 `GEO_RESTRICTED` for US IP addresses (Cloudflare `cf-ipcountry`).
+> Read-only endpoints are unaffected.
 
 ## Contents
 
 - [Authentication](#authentication) — `POST /auth/connect`
 - [Wallet Management](#wallet-management) — balance, deposit address, withdraw-fee, withdraw
-- [Index Investment](#index-investment) — preview, invest, positions
+- [Index Investment](#index-investment) — preview, invest, positions, redeem
 - [Performance](#performance) — monthly daily returns
 - [Chart](#chart) — BTC price + strike lines
-- [Portfolio Dashboard](#portfolio-dashboard) — NAV, PnL, totalReturn
+- [Portfolio Dashboard](#portfolio-dashboard) — NAV, PnL, totalReturn, breakdown
 - [Accounting](#accounting) — positions, trades, pnl report
+- [Signature Authentication](#signature-authentication) — EIP-712 signing
 - [Enum Reference](#enum-reference) — all enum values
 
 ---
@@ -95,6 +100,8 @@ to USDC.e when investing.
 ### POST /wallets/withdraw
 
 Supports Polygon local transfer and cross-chain withdrawal via Polymarket Bridge.
+
+> Requires EIP-712 signature (`Withdraw` type). See [Signature Authentication](#signature-authentication).
 
 **Request:**
 
@@ -251,10 +258,12 @@ immediately against available liquidity. If USDC.e balance is insufficient
 but native USDC is available, an automatic Uniswap V3 swap is performed
 before placing orders.
 
+> Requires EIP-712 signature (`Invest` type). See [Signature Authentication](#signature-authentication).
+
 **Request:**
 
 ```json
-{ "userId": "uuid", "indexType": "BULLISH", "amount": 100 }
+{ "userId": "uuid", "indexType": "BULLISH", "amount": 100, "signature": "0x...", "nonce": 1740643200000 }
 ```
 
 Optional: `eventSlug`.
@@ -323,6 +332,45 @@ All index deposits for the user.
 ```
 
 **status enum:** PENDING | EXECUTING | COMPLETED | PARTIAL | FAILED
+
+### POST /index/redeem
+
+Early redeem all active positions for a direction. Market-sells via CLOB FAK
+orders. A 2% fee is charged on profit.
+
+> Requires EIP-712 signature (`Redeem` type). See [Signature Authentication](#signature-authentication).
+
+**Request:**
+
+```json
+{ "userId": "uuid", "direction": "BULLISH", "signature": "0x...", "nonce": 1740643200000 }
+```
+
+**Response:**
+
+```json
+{
+  "sold": 4,
+  "totalReceived": 35.12,
+  "totalCost": 30.00,
+  "profit": 5.12,
+  "fee": 0.10,
+  "results": [
+    { "tokenId": "12345...", "title": "↑ 90,000", "shares": 50.5, "sellPrice": 0.65, "received": 32.83, "status": "SOLD" }
+  ]
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| sold | Number of allocations successfully sold |
+| totalReceived | Actual USDC.e received (on-chain balance delta) |
+| profit | totalReceived - totalCost |
+| fee | 2% of profit (only when profit > 0) |
+| results[].status | SOLD / PLACED / REJECTED / NO_BIDS / SKIPPED / ERROR |
+
+**Auto-redemption**: Resolved markets are automatically redeemed every hour
+by a cron job. This endpoint is only for pre-settlement exits.
 
 ---
 
@@ -417,6 +465,8 @@ strikePrices includes both UP and DOWN directions regardless of indexType.
   "nav": 1520.50,
   "deployedPrincipal": 1000.00,
   "availableBalance": 500.00,
+  "unrealizedPnl": 15.50,
+  "realizedPnl": 5.00,
   "pnl": 20.50,
   "totalReturn": 0.0205,
   "returnChart": [
@@ -430,12 +480,43 @@ strikePrices includes both UP and DOWN directions regardless of indexType.
 | Field | Description |
 |-------|-------------|
 | nav | Net asset value = position market value + available balance |
-| deployedPrincipal | Sum of all FILLED index investments |
+| deployedPrincipal | Active + redeemed positions' cost |
 | availableBalance | Total USDC available in Safe wallet (USDC.e + native USDC) |
-| pnl | Current market value of positions - deployed principal |
+| unrealizedPnl | Active position value - active position cost |
+| realizedPnl | Sum of redeemed amounts - redeemed position cost |
+| pnl | unrealizedPnl + realizedPnl |
 | totalReturn | pnl / deployedPrincipal (0.0205 = 2.05%) |
 
 returnChart granularity: 24h → hourly, 7d/30d/all → daily.
+
+### GET /portfolio/breakdown
+
+Per-direction (BULLISH / BEARISH) investment metrics.
+
+**Query params:** `userId` (required).
+
+**Response:**
+
+```json
+{
+  "bullish": {
+    "deployedPrincipal": 500.00,
+    "positionValue": 520.50,
+    "unrealizedPnl": 20.50,
+    "realizedPnl": 0,
+    "pnl": 20.50,
+    "totalReturn": 0.041
+  },
+  "bearish": {
+    "deployedPrincipal": 300.00,
+    "positionValue": 285.00,
+    "unrealizedPnl": -15.00,
+    "realizedPnl": 5.00,
+    "pnl": -10.00,
+    "totalReturn": -0.0333
+  }
+}
+```
 
 ---
 
@@ -456,6 +537,39 @@ totalRealizedPnL, totalUnrealizedPnL, returnPercentage.
 
 ---
 
+## Signature Authentication
+
+Write endpoints (`invest`, `withdraw`, `redeem`) require EIP-712 typed data
+signatures from the user's connected wallet. The backend recovers the signer
+address and compares it to the `walletAddress` registered for the `userId`.
+
+**Domain:**
+
+```json
+{ "name": "PolyVaults", "version": "1", "chainId": 137 }
+```
+
+**Types:**
+
+| Action | Fields |
+|--------|--------|
+| Invest | `action: "invest"`, `userId`, `indexType`, `amount: uint256` (6 decimals), `nonce: uint256` |
+| Withdraw | `action: "withdraw"`, `userId`, `toAddress`, `amount: uint256` (6 decimals), `nonce: uint256` |
+| Redeem | `action: "redeem"`, `userId`, `direction`, `nonce: uint256` |
+
+**Nonce**: Use `Date.now()` (millisecond timestamp). Valid within a 5-minute
+window from server time. Expired nonces return 400.
+
+**Errors:**
+
+| HTTP | Message |
+|------|---------|
+| 400 | Missing signature/userId/nonce |
+| 400 | Signature expired (nonce > 5 min from server time) |
+| 401 | Signature does not match user wallet address |
+
+---
+
 ## Enum Reference
 
 | Enum | Values |
@@ -466,4 +580,5 @@ totalRealizedPnL, totalUnrealizedPnL, returnPercentage.
 | OrderSide | BUY, SELL |
 | OrderType | GTC, GTD, FOK, FAK |
 | IndexDepositStatus | PENDING, EXECUTING, COMPLETED, PARTIAL, FAILED |
+| IndexAllocationStatus | PENDING, PLACED, FILLED, FAILED, SOLD, REDEEMED |
 | TradeStatus | PENDING, MATCHED, MINED, CONFIRMED, FAILED |
