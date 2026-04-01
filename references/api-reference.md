@@ -12,6 +12,7 @@
 
 - [Authentication](#authentication) — `POST /auth/connect`
 - [Wallet Management](#wallet-management) — balance, deposit address, withdraw-fee, withdraw
+- [Market Status](#market-status) — current month event availability
 - [Index Investment](#index-investment) — preview, invest, positions, redeem
 - [Performance](#performance) — monthly daily returns
 - [Chart](#chart) — BTC price + strike lines
@@ -187,6 +188,35 @@ Lists supported withdrawal chains.
   { "id": "solana", "name": "Solana", "chainId": "1151111081099710", "minWithdrawal": 2, "addressType": "svm" }
 ]
 ```
+
+---
+
+## Market Status
+
+### GET /market/status
+
+Check if the current month's BTC prediction market is available on Polymarket.
+
+**Response:**
+
+```json
+{
+  "available": true,
+  "month": "April",
+  "year": 2026,
+  "slug": "what-price-will-bitcoin-hit-in-april-2026",
+  "title": "What price will Bitcoin hit in April?",
+  "marketsCount": 17
+}
+```
+
+When unavailable: `available: false`, `slug: null`, `title: null`, `marketsCount: 0`.
+
+**Errors:**
+
+| Code | When |
+|------|------|
+| 400  | `The [Month Year] BTC prediction market is not yet available on Polymarket. Please check back later.` — also applies to `POST /index/preview`, `POST /index/invest`, and `GET /chart/btc-strikes` |
 
 ---
 
