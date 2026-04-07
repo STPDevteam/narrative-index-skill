@@ -3,6 +3,7 @@
 ## Contents
 
 - [Product Concept](#product-concept) — what the platform does
+- [Supported Assets](#supported-assets) — multi-asset coverage
 - [Strategy Types](#strategy-types) — Bullish vs Bearish index
 - [Polymarket Market Structure](#polymarket-market-structure) — event, market, token hierarchy
 - [Weight Calculation](#weight-calculation) — allocation algorithm
@@ -16,36 +17,60 @@
 
 ## Product Concept
 
-Narrative Index Vault creates BTC directional index products using Polymarket
-prediction markets. Users gain leveraged exposure to BTC price movements by
-purchasing baskets of binary outcome contracts that settle monthly.
+Narrative Index Vault creates multi-asset directional index products using
+Polymarket prediction markets. Users gain leveraged exposure to price movements
+of various assets — crypto, commodities, and metals — by purchasing baskets of
+binary outcome contracts that settle monthly.
+
+---
+
+## Supported Assets
+
+The platform supports multiple underlying assets across three categories:
+
+| Category | Assets | Price Source |
+|----------|--------|-------------|
+| **Crypto** | BTC, ETH, SOL | Binance spot price |
+| **Energy** | Crude Oil (WTI) | Pyth Network (rolling futures) |
+| **Metals** | Gold, Silver | Pyth Network (spot) |
+
+Each asset has independent Polymarket events with their own strike prices.
+New assets can be added via the asset registry configuration.
 
 ---
 
 ## Strategy Types
 
-### BTC Bullish Index
+### Bullish Index
 
-- Buys **YES** on multiple "Will BTC hit $X?" contracts (UP direction)
-- Profits when BTC breaks through strike prices upward
+- Buys **YES** on multiple "Will [asset] hit $X?" contracts (UP direction)
+- Profits when the asset breaks through strike prices upward
 - More strikes breached = higher return (leverage effect)
 
-### BTC Bearish Index
+### Bearish Index
 
-- Buys **YES** on multiple "Will BTC drop below $X?" contracts (DOWN direction)
-- Profits when BTC falls through strike prices downward
-- Can be used to hedge existing BTC spot positions
+- Buys **YES** on multiple "Will [asset] drop below $X?" contracts (DOWN direction)
+- Profits when the asset falls through strike prices downward
+- Can be used to hedge existing spot positions
+
+Both strategies work identically across all supported assets — only the
+underlying price feed and Polymarket event differ.
 
 ---
 
 ## Polymarket Market Structure
 
 ```
-Event (monthly)
-  └─ "What price will Bitcoin hit in March 2026?"
+Event (monthly, per asset)
+  └─ "What price will Bitcoin hit in April 2026?"
       ├─ Market: "Will BTC hit $85,000?"   → conditionId → tokenId(YES), tokenId(NO)
       ├─ Market: "Will BTC hit $90,000?"   → conditionId → tokenId(YES), tokenId(NO)
       ├─ Market: "Will BTC hit $95,000?"   → conditionId → tokenId(YES), tokenId(NO)
+      └─ ...
+
+  └─ "What price will Oil hit in April 2026?"
+      ├─ Market: "Will Oil hit $65?"       → conditionId → tokenId(YES), tokenId(NO)
+      ├─ Market: "Will Oil hit $70?"       → conditionId → tokenId(YES), tokenId(NO)
       └─ ...
 ```
 
@@ -87,27 +112,31 @@ all remaining strikes satisfy these constraints.
 
 ## Settlement
 
-- All contracts settle on the **last day of the month at UTC 23:59**
+- All contracts settle monthly. Polymarket uses **Eastern Time (ET)** for
+  market creation and settlement timing.
 - Settlement is binary: YES pays $1.00, NO pays $0.00
 - Returns depend on how many strikes were breached by settlement time
+- Markets for different assets may be created on different days of the month
+  (typically the 1st–3rd). The platform automatically handles late market
+  creation.
 
 ---
 
 ## Performance Scenarios
 
-### Bullish Index
+### Bullish Index (applies to any asset)
 
-| Scenario | BTC Move | Index Return | Notes |
-|----------|----------|--------------|-------|
+| Scenario | Asset Move | Index Return | Notes |
+|----------|-----------|--------------|-------|
 | Sustained rally | +30% | ~+42% | Multiple strikes breached |
 | Spike & pullback | +8% EOM | ~+18% | Early breaches lock in gains |
 | Sideways | ~0% | ~-5% | Time value decay |
 | Crash | -20% | ~-80% | All YES contracts expire worthless |
 
-### Bearish Index
+### Bearish Index (applies to any asset)
 
-| Scenario | BTC Move | Index Return | Notes |
-|----------|----------|--------------|-------|
+| Scenario | Asset Move | Index Return | Notes |
+|----------|-----------|--------------|-------|
 | Sustained decline | -22% | ~+38% | Multiple breakdown strikes triggered |
 | Flash crash recovery | -5% EOM | ~+12% | Early breakdowns lock in gains |
 | Sideways | ~0% | ~-5% | Time value decay |
@@ -122,3 +151,6 @@ all remaining strikes satisfy these constraints.
 3. **Liquidity risk** — thin markets may cause worse fill prices
 4. **Smart contract risk** — depends on Polymarket and Polygon network health
 5. **Oracle risk** — settlement price relies on external oracle feeds
+6. **Commodity-specific risk** — Oil uses rolling futures contracts; Gold and
+   Silver use spot oracle feeds. Price source differences may affect
+   settlement outcomes vs spot expectations.
