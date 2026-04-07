@@ -4,17 +4,24 @@
 >
 > All requests use JSON. Identify users by `userId` (UUID from `POST /auth/connect`).
 >
+> **Multi-asset**: Most endpoints accept an optional `asset` query/body parameter
+> (default: `BTC`). Supported assets: BTC, ETH, SOL, OIL, GOLD, SILVER.
+>
 > **Geo-restriction**: Write endpoints (invest, withdraw, redeem, orders, connect)
 > return HTTP 403 `GEO_RESTRICTED` for US IP addresses (Cloudflare `cf-ipcountry`).
 > Read-only endpoints are unaffected.
+>
+> **Rate limiting**: Global limits of 10 requests/second and 100 requests/minute
+> per IP. Exceeding returns HTTP 429.
 
 ## Contents
 
 - [Authentication](#authentication) — `POST /auth/connect`
 - [Wallet Management](#wallet-management) — balance, deposit address, withdraw-fee, withdraw
+- [Market Status & Assets](#market-status--assets) — asset registry, market availability
 - [Index Investment](#index-investment) — preview, invest, positions, redeem
 - [Performance](#performance) — monthly daily returns
-- [Chart](#chart) — BTC price + strike lines
+- [Chart](#chart) — asset price + strike lines
 - [Portfolio Dashboard](#portfolio-dashboard) — NAV, PnL, totalReturn, breakdown
 - [Accounting](#accounting) — positions, trades, pnl report
 - [Signature Authentication](#signature-authentication) — EIP-712 signing
@@ -106,7 +113,7 @@ Supports Polygon local transfer and cross-chain withdrawal via Polymarket Bridge
 **Request:**
 
 ```json
-{ "userId": "uuid", "toAddress": "0x...", "amount": 100, "chain": "ethereum" }
+{ "userId": "uuid", "toAddress": "0x...", "amount": 100, "chain": "ethereum", "signature": "0x...", "nonce": 1740643200000 }
 ```
 
 | Field | Type | Required | Description |
@@ -116,6 +123,8 @@ Supports Polygon local transfer and cross-chain withdrawal via Polymarket Bridge
 | amount | number | Yes | Amount in dollars, min $0.01 |
 | token | string | No | Polygon only: `"USDC"` or `"USDC.e"` (default `"USDC.e"`) |
 | chain | string | No | Target chain (default `"polygon"`). Options: `polygon`, `ethereum`, `arbitrum`, `base`, `optimism`, `bsc`, `solana` |
+| signature | string | Yes | EIP-712 signature |
+| nonce | number | Yes | `Date.now()` millisecond timestamp (single-use) |
 
 For Polygon: auto-swaps between USDC/USDC.e if needed.
 For cross-chain: consolidates to USDC.e, sends to Bridge deposit address.
@@ -190,6 +199,74 @@ Lists supported withdrawal chains.
 
 ---
 
+## Market Status & Assets
+
+### GET /market/status
+
+Check prediction market availability. Supports single asset or all assets.
+
+**Query params:**
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| asset | string | No | Asset symbol (e.g. `BTC`, `OIL`). When omitted, returns all assets. |
+
+**Response (single asset):**
+
+```json
+{
+  "available": true,
+  "asset": "BTC",
+  "status": "active",
+  "month": "April",
+  "year": 2026,
+  "slug": "what-price-will-bitcoin-hit-in-april-2026",
+  "title": "What price will Bitcoin hit in April?",
+  "marketsCount": 17,
+  "totalOpenInterest": 250000
+}
+```
+
+**Response (all assets — no `asset` param):** Array of the above objects.
+
+| Field | Description |
+|-------|-------------|
+| available | Whether the current month's market exists |
+| status | `active` / `pending_liquidity` / `coming_soon` |
+| totalOpenInterest | Sum of open interest across all markets for this asset |
+
+When unavailable: `available: false`, `slug: null`, `title: null`, `marketsCount: 0`.
+
+**Errors:**
+
+| Code | When |
+|------|------|
+| 400  | `The [Month Year] [asset] prediction market is not yet available on Polymarket.` — also applies to `POST /index/preview`, `POST /index/invest`, and `GET /chart/strikes` |
+
+### GET /assets
+
+List all registered assets with their current status.
+
+**Response:**
+
+```json
+{
+  "assets": [
+    { "symbol": "BTC", "name": "Bitcoin", "category": "CRYPTO", "status": "active" },
+    { "symbol": "OIL", "name": "Crude Oil", "category": "ENERGY", "status": "active" },
+    { "symbol": "ETH", "name": "Ethereum", "category": "CRYPTO", "status": "coming_soon" },
+    { "symbol": "GOLD", "name": "Gold", "category": "METALS", "status": "coming_soon" }
+  ]
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| status | `active` = live market, can invest. `pending_liquidity` = market exists but low OI. `coming_soon` = registered, no market yet. |
+| category | `CRYPTO`, `ENERGY`, or `METALS` |
+
+---
+
 ## Index Investment
 
 ### POST /index/preview
@@ -199,13 +276,14 @@ Preview strike allocation before investing.
 **Request:**
 
 ```json
-{ "indexType": "BULLISH", "amount": 100, "userId": "abc-123" }
+{ "indexType": "BULLISH", "amount": 100, "userId": "abc-123", "asset": "BTC" }
 ```
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | indexType | enum | Yes | BULLISH or BEARISH |
 | amount | number | Yes | Investment amount ($), min 10 |
+| asset | string | No | Asset symbol (default: BTC) |
 | eventSlug | string | No | Override default current-month event |
 | userId | string | No | When provided, calculates swap fee if USDC→USDC.e conversion is needed |
 
@@ -213,6 +291,7 @@ Preview strike allocation before investing.
 
 ```json
 {
+  "asset": "BTC",
   "indexType": "BULLISH",
   "totalDeposit": 100,
   "effectiveAmount": 99.95,
@@ -240,6 +319,7 @@ Preview strike allocation before investing.
 
 | Field | Description |
 |-------|-------------|
+| asset | Asset symbol for this allocation |
 | totalDeposit | Requested investment amount |
 | effectiveAmount | Amount after deducting swap fee (= totalDeposit if no swap needed) |
 | swapFee | Swap fee (0.1% of USDC amount needing conversion; 0 if no swap) |
@@ -263,10 +343,18 @@ before placing orders.
 **Request:**
 
 ```json
-{ "userId": "uuid", "indexType": "BULLISH", "amount": 100, "signature": "0x...", "nonce": 1740643200000 }
+{ "userId": "uuid", "indexType": "BULLISH", "amount": 100, "asset": "BTC", "signature": "0x...", "nonce": 1740643200000 }
 ```
 
-Optional: `eventSlug`.
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| userId | string | Yes | User ID |
+| indexType | enum | Yes | BULLISH or BEARISH |
+| amount | number | Yes | Investment amount ($), min 10 |
+| asset | string | No | Asset symbol (default: BTC) |
+| eventSlug | string | No | Override default current-month event |
+| signature | string | Yes | EIP-712 signature |
+| nonce | number | Yes | `Date.now()` millisecond timestamp (single-use) |
 
 **Response:**
 
@@ -274,6 +362,7 @@ Optional: `eventSlug`.
 {
   "depositId": "uuid",
   "userId": "user-123",
+  "asset": "BTC",
   "indexType": "BULLISH",
   "totalDeposit": 100,
   "totalAllocated": 98.50,
@@ -320,6 +409,7 @@ All index deposits for the user.
   {
     "id": "uuid",
     "userId": "user-123",
+    "asset": "BTC",
     "indexType": "BULLISH",
     "depositAmount": 100,
     "eventSlug": "what-price-will-bitcoin-hit-in-march-2026",
@@ -343,8 +433,16 @@ orders. A 2% fee is charged on profit.
 **Request:**
 
 ```json
-{ "userId": "uuid", "direction": "BULLISH", "signature": "0x...", "nonce": 1740643200000 }
+{ "userId": "uuid", "direction": "BULLISH", "asset": "BTC", "signature": "0x...", "nonce": 1740643200000 }
 ```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| userId | string | Yes | User ID |
+| direction | enum | Yes | BULLISH or BEARISH |
+| asset | string | No | Asset symbol (default: BTC) |
+| signature | string | Yes | EIP-712 signature |
+| nonce | number | Yes | `Date.now()` millisecond timestamp (single-use) |
 
 **Response:**
 
@@ -376,9 +474,16 @@ by a cron job. This endpoint is only for pre-settlement exits.
 
 ## Performance
 
-### GET /performance/returns?month=YYYY-MM
+### GET /performance/returns
 
 Daily return data. Limited to the last 6 months.
+
+**Query params:**
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| month | string | Yes | Format: `YYYY-MM` |
+| asset | string | No | Asset symbol (default: BTC) |
 
 **Response:**
 
@@ -386,6 +491,7 @@ Daily return data. Limited to the last 6 months.
 [
   {
     "date": "2026-03-01",
+    "asset": "BTC",
     "btcPrice": 87500.00,
     "btcReturn": 0.0,
     "bullishReturn": 0.0,
@@ -398,24 +504,29 @@ Daily return data. Limited to the last 6 months.
 
 | Field | Description |
 |-------|-------------|
-| btcReturn | BTC cumulative return from month start (0.008 = 0.8%) |
+| asset | Asset symbol |
+| btcPrice | Asset spot price (named `btcPrice` for backward compatibility) |
+| btcReturn | Asset cumulative return from month start (0.008 = 0.8%) |
 | bullishReturn | Bullish Index cumulative return |
 | bearishReturn | Bearish Index cumulative return |
-| *Outperformance | indexReturn - btcReturn |
+| *Outperformance | indexReturn - assetReturn |
 
 ---
 
 ## Chart
 
-### GET /chart/btc-strikes
+### GET /chart/strikes
 
-Hourly BTC price data + strike price lines.
+Hourly price data + strike price lines for any supported asset.
+
+Legacy alias: `GET /chart/btc-strikes` (same behavior, defaults to BTC).
 
 **Query params:**
 
 | Param | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | indexType | enum | Yes | — | BULLISH or BEARISH |
+| asset | string | No | BTC | Asset symbol |
 | eventSlug | string | No | current month | Event slug |
 | from | string | No | month start | ISO 8601 start time |
 | to | string | No | now | ISO 8601 end time |
@@ -424,6 +535,7 @@ Hourly BTC price data + strike price lines.
 
 ```json
 {
+  "asset": "BTC",
   "priceData": [
     { "timestamp": "2026-03-01T00:00:00.000Z", "close": 87500.00 }
   ],
@@ -455,15 +567,16 @@ strikePrices includes both UP and DOWN directions regardless of indexType.
 | Param | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | userId | string | Yes | — | User ID |
-| indexFilter | enum | No | ALL | ALL / BULLISH / BEARISH |
+| asset | string | No | — | Filter to specific asset. When provided, includes per-direction breakdown. |
 | timeRange | enum | No | all | 24h / 7d / 30d / all |
 
-**Response:**
+**Response (no asset filter):**
 
 ```json
 {
   "nav": 1520.50,
   "deployedPrincipal": 1000.00,
+  "positionValue": 1020.50,
   "availableBalance": 500.00,
   "unrealizedPnl": 15.50,
   "realizedPnl": 5.00,
@@ -472,15 +585,17 @@ strikePrices includes both UP and DOWN directions regardless of indexType.
   "returnChart": [
     { "timestamp": "2026-03-12T01:00:00.000Z", "totalReturn": 0.018 }
   ],
-  "indexFilter": "ALL",
   "timeRange": "24h"
 }
 ```
+
+**Response (with `asset` filter):** Same fields plus `asset`, `bullish`, and `bearish` direction breakdowns.
 
 | Field | Description |
 |-------|-------------|
 | nav | Net asset value = position market value + available balance |
 | deployedPrincipal | Active + redeemed positions' cost |
+| positionValue | Current market value of active positions |
 | availableBalance | Total USDC available in Safe wallet (USDC.e + native USDC) |
 | unrealizedPnl | Active position value - active position cost |
 | realizedPnl | Sum of redeemed amounts - redeemed position cost |
@@ -493,9 +608,14 @@ returnChart granularity: 24h → hourly, 7d/30d/all → daily.
 
 Per-direction (BULLISH / BEARISH) investment metrics.
 
-**Query params:** `userId` (required).
+**Query params:**
 
-**Response:**
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| userId | string | Yes | User ID |
+| asset | string | No | Filter to specific asset. When omitted, returns overall + per-asset `assets[]`. |
+
+**Response (with `asset`):**
 
 ```json
 {
@@ -503,20 +623,18 @@ Per-direction (BULLISH / BEARISH) investment metrics.
     "deployedPrincipal": 500.00,
     "positionValue": 520.50,
     "unrealizedPnl": 20.50,
-    "realizedPnl": 0,
-    "pnl": 20.50,
     "totalReturn": 0.041
   },
   "bearish": {
     "deployedPrincipal": 300.00,
     "positionValue": 285.00,
     "unrealizedPnl": -15.00,
-    "realizedPnl": 5.00,
-    "pnl": -10.00,
     "totalReturn": -0.0333
   }
 }
 ```
+
+**Response (without `asset`):** Same structure plus `assets[]` array containing per-asset breakdowns.
 
 ---
 
@@ -546,7 +664,7 @@ address and compares it to the `walletAddress` registered for the `userId`.
 **Domain:**
 
 ```json
-{ "name": "PolyVaults", "version": "1", "chainId": 137 }
+{ "name": "Polyvaults", "version": "1", "chainId": 137 }
 ```
 
 **Types:**
@@ -558,7 +676,8 @@ address and compares it to the `walletAddress` registered for the `userId`.
 | Redeem | `action: "redeem"`, `userId`, `direction`, `nonce: uint256` |
 
 **Nonce**: Use `Date.now()` (millisecond timestamp). Valid within a 5-minute
-window from server time. Expired nonces return 400.
+window from server time. **Each nonce is single-use** — reusing a nonce returns
+400 "Nonce already used".
 
 **Errors:**
 
@@ -566,6 +685,7 @@ window from server time. Expired nonces return 400.
 |------|---------|
 | 400 | Missing signature/userId/nonce |
 | 400 | Signature expired (nonce > 5 min from server time) |
+| 400 | Nonce already used (replay protection) |
 | 401 | Signature does not match user wallet address |
 
 ---
@@ -575,7 +695,8 @@ window from server time. Expired nonces return 400.
 | Enum | Values |
 |------|--------|
 | IndexType | BULLISH, BEARISH |
-| PortfolioIndexFilter | ALL, BULLISH, BEARISH |
+| AssetCategory | CRYPTO, ENERGY, METALS |
+| AssetStatus | active, pending_liquidity, coming_soon |
 | PortfolioTimeRange | 24h, 7d, 30d, all |
 | OrderSide | BUY, SELL |
 | OrderType | GTC, GTD, FOK, FAK |
