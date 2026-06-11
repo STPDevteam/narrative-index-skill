@@ -1,42 +1,45 @@
 # Narrative Index — Agent Skill
 
-An AI Agent Skill for operating the [Narrative Index Vault](https://polyvaults.ai) platform — a custodial multi-asset directional index product built on Polymarket prediction markets.
+An AI Agent Skill for operating [Polyvaults](https://polyvaults.ai) — a custodial Polymarket index platform covering asset-direction indices, NarrativeBasket products such as TACO, and World Cup 2026 bracket products.
 
 ## What it does
 
-This Skill enables AI agents (Claude, Cursor, etc.) to autonomously manage the full investment lifecycle across multiple assets (BTC, ETH, SOL, Oil, Gold, Silver):
+This Skill enables AI agents (Claude, Cursor, etc.) to autonomously manage the full investment lifecycle across Polyvaults products:
 
 - **Asset discovery** — browse available assets, check market status and liquidity
-- **Wallet management** — create Safe wallets, check balances, get deposit addresses
-- **Index investing** — preview allocations, execute Bullish/Bearish index orders for any asset
-- **Portfolio monitoring** — NAV, PnL, total return, daily performance data, per-asset breakdown
+- **Wallet management** — challenge-based wallet connect, deposit addresses, pUSD/USDC balances, locked and withdrawable funds
+- **Index investing** — preview allocations and execute Bullish/Bearish asset-direction products
+- **Product investing** — operate `/products/:productKey/*` for TACO, World Cup, and new INDEX product pages
+- **Portfolio monitoring** — NAV, PnL, total return, daily performance data, per-asset and per-product breakdowns
 - **Chart data** — hourly price data with strike lines for any supported asset
 - **Withdrawals** — withdraw to Polygon or cross-chain (ETH, Arbitrum, Base, Optimism, BSC, Solana)
-- **Early redemption** — market-sell active positions before settlement with 2% profit fee
-- **Auto-redemption** — resolved markets are automatically redeemed every hour
+- **Early redemption** — market-sell active positions before settlement with 5% profit fee on positive profit
+- **Auto-redemption / auto-roll** — resolved markets are redeemed to pUSD; TACO and World Cup products can auto-compound/roll when enabled
 
 ## Installation
 
-### npx skills add (Recommended)
+### bunx skills add (Recommended)
 
 Install from GitHub using the [skills CLI](https://www.npmjs.com/package/skills):
 
 ```bash
-npx skills add STPDevteam/narrative-index-skill
+bunx skills add STPDevteam/narrative-index-skill
 ```
 
 Install globally (available across all projects):
 
 ```bash
-npx skills add STPDevteam/narrative-index-skill -g
+bunx skills add STPDevteam/narrative-index-skill -g
 ```
 
 Install to a specific agent:
 
 ```bash
-npx skills add STPDevteam/narrative-index-skill -a cursor
-npx skills add STPDevteam/narrative-index-skill -a claude-code
+bunx skills add STPDevteam/narrative-index-skill -a cursor
+bunx skills add STPDevteam/narrative-index-skill -a claude-code
 ```
+
+If your environment does not use Bun, `npx skills add ...` remains equivalent.
 
 ### ClawHub
 
@@ -99,36 +102,51 @@ Upload via the `/v1/skills` endpoint. See the [Skills API documentation](https:/
 | Symbol | Name | Category | Status |
 |--------|------|----------|--------|
 | BTC | Bitcoin | Crypto | Active |
-| ETH | Ethereum | Crypto | Coming Soon |
+| ETH | Ethereum | Crypto | Active |
 | SOL | Solana | Crypto | Coming Soon |
 | OIL | Crude Oil | Energy | Active |
 | GOLD | Gold | Metals | Coming Soon |
 | SILVER | Silver | Metals | Coming Soon |
 
+## Current Product Families
+
+| Family | productKind | Examples |
+|--------|-------------|----------|
+| Asset-direction index | `INDEX` | `btc-bullish`, `btc-bearish`, `eth-bullish`, `oil-bearish` |
+| NarrativeBasket | `MANAGED` | `narrative-basket:taco-v1` |
+| World Cup 2026 bracket | `MANAGED` | `worldcup-2026:europe:r48-32`, `worldcup-2026:custom:r48-32` |
+
 ## Available Tools
 
 | Tool | Endpoint | Description |
 |------|----------|-------------|
-| `connect_wallet` | `POST /auth/connect` | Register/login, returns userId and Safe address |
-| `get_wallet_balance` | `GET /wallets/:userId/balance` | Query USDC.e + native USDC balance |
+| `connect_wallet` | `GET /auth/challenge`, `POST /auth/connect` | Register/login via wallet ownership challenge |
+| `get_wallet_balance` | `GET /wallets/:userId/balance` | Query USDC.e + native USDC + pUSD + locked/withdrawable balances |
 | `get_deposit_address` | `GET /wallets/:userId/deposit-address` | Get deposit address (accepts USDC & USDC.e) |
 | `get_assets` | `GET /assets` | List all registered assets with status |
 | `get_market_status` | `GET /market/status` | Check market availability (single or all assets) |
-| `preview_index` | `POST /index/preview` | Preview strike allocations (supports `asset` param) |
-| `invest_index` | `POST /index/invest` | Execute index investment (supports `asset` param) |
+| `preview_index` | `POST /index/preview` | Legacy asset-direction preview |
+| `invest_index` | `POST /index/invest` | Legacy asset-direction investment |
 | `get_positions` | `GET /index/positions/:userId` | View index positions (includes asset info) |
 | `get_portfolio` | `GET /portfolio?userId=` | NAV/PnL/totalReturn dashboard (supports `asset` filter) |
 | `get_portfolio_breakdown` | `GET /portfolio/breakdown` | Per-direction metrics (supports `asset` filter) |
+| `list_products` | `GET /products` | List productKey-based INDEX and MANAGED products |
+| `get_product_definition` | `GET /products/:productKey/definition` | Product metadata and managed basket definitions |
+| `get_product_health` | `GET /products/:productKey/health` | Tradability and per-strike health |
+| `preview_product` | `POST /products/:productKey/preview` | Recommended product preview endpoint |
+| `invest_product` | `POST /products/:productKey/invest` | Recommended product investment endpoint |
+| `redeem_product` | `POST /products/:productKey/redeem` | Product-level early exit |
+| `get_product_portfolios` | `GET /portfolio/products` | Product-level holdings list |
+| `get_product_portfolio` | `GET /portfolio/products/:productKey` | Single product portfolio detail |
+| `stop_rolling` | `POST /products/:productKey/stop-rolling` | Release World Cup auto-roll locked funds |
+| `get_worldcup_catalog` | `GET /products/worldcup-2026/catalog` | World Cup stages, teams, presets, exit stages |
 | `get_returns` | `GET /performance/returns?month=` | Monthly daily return data (supports `asset` param) |
 | `get_chart` | `GET /chart/strikes` | Asset price + strike lines chart data (supports `asset` param) |
 | `withdraw` | `POST /wallets/withdraw` | Withdraw to Polygon or cross-chain (7 chains) |
 | `withdraw_quote` | `POST /wallets/withdraw-quote` | Preview cross-chain fees and ETA |
 | `withdraw_status` | `GET /wallets/withdraw-status/:addr` | Track cross-chain withdrawal progress |
 | `supported_chains` | `GET /wallets/supported-chains` | List supported withdrawal chains |
-| `get_accounting_positions` | `GET /accounting/:userId/positions` | Positions with unrealized PnL |
-| `get_trades` | `GET /accounting/:userId/trades` | Trade history |
-| `get_pnl` | `GET /accounting/:userId/pnl` | P&L report |
-| `early_redeem` | `POST /index/redeem` | Market-sell positions (requires signature) |
+| `early_redeem` | `POST /index/redeem` | Legacy asset+direction market-sell (requires signature) |
 
 ## API Base URL
 

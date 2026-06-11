@@ -7,23 +7,27 @@
 > **Multi-asset**: Most endpoints accept an optional `asset` query/body parameter
 > (default: `BTC`). Supported assets: BTC, ETH, SOL, OIL, GOLD, SILVER.
 >
-> **Geo-restriction**: Write endpoints (invest, withdraw, redeem, orders, connect)
-> return HTTP 403 `GEO_RESTRICTED` for US IP addresses (Cloudflare `cf-ipcountry`).
-> Read-only endpoints are unaffected.
+> **Product abstraction**: New surfaces should prefer `/products/:productKey/*`.
+> Legacy `/index/*` endpoints remain for asset-direction compatibility.
+>
+> **Geo-restriction**: New-position endpoints return HTTP 403 `GEO_RESTRICTED`
+> in blocked or close-only regions. Close-only regions may still redeem and
+> withdraw. Read-only endpoints are unaffected.
 >
 > **Rate limiting**: Global limits of 10 requests/second and 100 requests/minute
 > per IP. Exceeding returns HTTP 429.
 
 ## Contents
 
-- [Authentication](#authentication) — `POST /auth/connect`
+- [Authentication](#authentication) — challenge + `POST /auth/connect`
 - [Wallet Management](#wallet-management) — balance, deposit address, withdraw-fee, withdraw
 - [Market Status & Assets](#market-status--assets) — asset registry, market availability
+- [Products](#products) — productKey-based INDEX/MANAGED products
 - [Index Investment](#index-investment) — preview, invest, positions, redeem
 - [Performance](#performance) — monthly daily returns
 - [Chart](#chart) — asset price + strike lines
 - [Portfolio Dashboard](#portfolio-dashboard) — NAV, PnL, totalReturn, breakdown
-- [Accounting](#accounting) — positions, trades, pnl report
+- [Accounting](#accounting) — no public read endpoints; use portfolio APIs
 - [Signature Authentication](#signature-authentication) — EIP-712 signing
 - [Enum Reference](#enum-reference) — all enum values
 
@@ -31,14 +35,40 @@
 
 ## Authentication
 
+### GET /auth/challenge
+
+Issue a one-time EIP-191 `personal_sign` challenge for wallet ownership proof.
+
+**Query params:**
+
+| Param | Required | Description |
+|-------|----------|-------------|
+| address | Yes | EVM wallet address (`0x...`) |
+
+**Response:**
+
+```json
+{
+  "challenge": "Sign this message to verify your wallet ownership.\n\nAddress: 0x...\nNonce: ...",
+  "expiresAt": 1780314666123
+}
+```
+
+The challenge is valid for 5 minutes and is consumed by `POST /auth/connect`.
+
 ### POST /auth/connect
 
-Register or log in.
+Register or log in after signing the challenge.
 
 **Request:**
 
 ```json
-{ "walletAddress": "0x1234567890abcdef1234567890abcdef12345678" }
+{
+  "walletAddress": "0x1234567890abcdef1234567890abcdef12345678",
+  "signature": "0x...",
+  "challenge": "Sign this message to verify your wallet ownership.\n\nAddress: 0x...\nNonce: ...",
+  "inviteCode": "OPTIONAL"
+}
 ```
 
 **Response:**
@@ -52,6 +82,7 @@ Register or log in.
   "isDeployed": true,
   "isApproved": true,
   "isNewUser": false,
+  "twitterHandle": null,
   "createdAt": "2026-03-12T08:00:00.000Z"
 }
 ```
@@ -59,9 +90,10 @@ Register or log in.
 | Field | Description |
 |-------|-------------|
 | userId | Unique user ID for all subsequent calls |
-| safeAddress | Platform-managed Safe wallet |
+| safeAddress | Platform-managed wallet address |
 | depositAddress | Same as safeAddress; send USDC or USDC.e here |
 | isNewUser | true on first connect |
+| twitterHandle | Linked Twitter handle if available |
 
 ---
 
@@ -79,7 +111,11 @@ Full wallet info (ownerAddress, safeAddress, isDeployed, isApproved).
   "formattedBalance": "1500.00",
   "nativeUsdcBalance": "500000000",
   "formattedNativeBalance": "500.00",
-  "totalBalance": "2000.000000"
+  "pusdBalance": "250000000",
+  "formattedPusdBalance": "250.000000",
+  "totalBalance": "2250.000000",
+  "lockedBalance": "50.000000",
+  "withdrawableBalance": "2200.000000"
 }
 ```
 
@@ -87,7 +123,10 @@ Full wallet info (ownerAddress, safeAddress, isDeployed, isApproved).
 |-------|-------------|
 | usdcBalance / formattedBalance | USDC.e (bridged) balance |
 | nativeUsdcBalance / formattedNativeBalance | Native USDC balance |
-| totalBalance | Sum of both |
+| pusdBalance / formattedPusdBalance | pUSD trading collateral balance |
+| totalBalance | Sum of USDC.e + native USDC + pUSD |
+| lockedBalance | Application-level cash lock for auto-roll chains |
+| withdrawableBalance | max(0, totalBalance - lockedBalance); use this for max withdraw/new invest |
 
 ### GET /wallets/:userId/deposit-address
 
@@ -95,8 +134,8 @@ Full wallet info (ownerAddress, safeAddress, isDeployed, isApproved).
 { "address": "0x...", "network": "Polygon", "token": "USDC / USDC.e" }
 ```
 
-Both USDC and USDC.e deposits are accepted. Native USDC is auto-converted
-to USDC.e when investing.
+Both USDC and USDC.e deposits are accepted. Trading uses pUSD; investment
+preparation wraps/converts collateral as needed.
 
 ### GET /wallets/withdraw-fee
 
@@ -113,7 +152,17 @@ Supports Polygon local transfer and cross-chain withdrawal via Polymarket Bridge
 **Request:**
 
 ```json
-{ "userId": "uuid", "toAddress": "0x...", "amount": 100, "chain": "ethereum", "signature": "0x...", "nonce": 1740643200000 }
+{
+  "userId": "uuid",
+  "toAddress": "0x...",
+  "amount": 100,
+  "token": "pUSD",
+  "chain": "ethereum",
+  "previewEstimatedOutput": 99.9,
+  "slippage": 0.02,
+  "signature": "0x...",
+  "nonce": 1740643200000
+}
 ```
 
 | Field | Type | Required | Description |
@@ -121,13 +170,15 @@ Supports Polygon local transfer and cross-chain withdrawal via Polymarket Bridge
 | userId | string | Yes | User ID |
 | toAddress | string | Yes | Destination address (EVM `0x...` or Solana base58) |
 | amount | number | Yes | Amount in dollars, min $0.01 |
-| token | string | No | Polygon only: `"USDC"` or `"USDC.e"` (default `"USDC.e"`) |
+| token | string | No | Polygon only: `"USDC"`, `"USDC.e"`, or `"pUSD"` |
 | chain | string | No | Target chain (default `"polygon"`). Options: `polygon`, `ethereum`, `arbitrum`, `base`, `optimism`, `bsc`, `solana` |
+| previewEstimatedOutput | number | No | Cross-chain quote baseline from `withdraw-quote` |
+| slippage | number | No | Cross-chain max slippage, 0.001–0.1, default 0.02 |
 | signature | string | Yes | EIP-712 signature |
 | nonce | number | Yes | `Date.now()` millisecond timestamp (single-use) |
 
-For Polygon: auto-swaps between USDC/USDC.e if needed.
-For cross-chain: consolidates to USDC.e, sends to Bridge deposit address.
+For Polygon: transfers the selected token. For cross-chain: consolidates via
+the bridge flow and validates current quote when preview fields are provided.
 
 **Response — Polygon:**
 
@@ -153,7 +204,7 @@ For cross-chain: consolidates to USDC.e, sends to Bridge deposit address.
 Preview cross-chain fees and estimated arrival time.
 
 ```json
-{ "userId": "uuid", "amount": 100, "chain": "ethereum" }
+{ "userId": "uuid", "amount": 100, "chain": "ethereum", "recipientAddress": "0x..." }
 ```
 
 **Response:**
@@ -163,7 +214,9 @@ Preview cross-chain fees and estimated arrival time.
   "chain": "Ethereum", "inputAmount": 100, "estimatedOutput": 99.99,
   "estimatedOutputBaseUnit": "99990000",
   "fees": { "gasUsd": 0.003, "totalImpactUsd": 0 },
-  "estimatedTimeMs": 25000, "minWithdrawal": 7
+  "estimatedTimeMs": 25000, "minWithdrawal": 7,
+  "quoteId": "quote-id",
+  "priceDisclaimer": "The estimated output may fluctuate slightly between preview and execution due to market and routing changes. This is not a final locked value."
 }
 ```
 
@@ -253,8 +306,8 @@ List all registered assets with their current status.
 {
   "assets": [
     { "symbol": "BTC", "name": "Bitcoin", "category": "CRYPTO", "status": "active" },
+    { "symbol": "ETH", "name": "Ethereum", "category": "CRYPTO", "status": "active" },
     { "symbol": "OIL", "name": "Crude Oil", "category": "ENERGY", "status": "active" },
-    { "symbol": "ETH", "name": "Ethereum", "category": "CRYPTO", "status": "coming_soon" },
     { "symbol": "GOLD", "name": "Gold", "category": "METALS", "status": "coming_soon" }
   ]
 }
@@ -267,7 +320,150 @@ List all registered assets with their current status.
 
 ---
 
+## Products
+
+The current product abstraction uses `productKey` to address both legacy
+asset-direction indices and managed products.
+
+### GET /products
+
+Returns all registered products.
+
+```json
+[
+  { "productKey": "btc-bullish", "productKind": "INDEX", "displayName": "BTC Bullish", "asset": "BTC", "indexDirection": "BULLISH" },
+  { "productKey": "narrative-basket:taco-v1", "productKind": "MANAGED", "displayName": "TACO Index" },
+  { "productKey": "worldcup-2026:custom:r48-32", "productKind": "MANAGED", "displayName": "World Cup 2026 — Custom to Knockouts" }
+]
+```
+
+When a `productKey` contains `:`, URL-encode it in the path
+(`narrative-basket%3Ataco-v1`) but keep the raw value in body/signature fields.
+
+### GET /products/:productKey/definition
+
+Returns product metadata. `INDEX` products return `asset` and `indexDirection`;
+managed basket products may also return a `basket` definition.
+
+### GET /products/:productKey/health
+
+Returns tradability.
+
+- `INDEX`: `{ productKey, productKind: "INDEX", tradable, reason? }`
+- `MANAGED`: per-strike health snapshot with `clusters[]`, `eligibleStrikes`,
+  OI, buy prices, and `dropReason`.
+
+### POST /products/:productKey/health/preview
+
+Same shape as `GET /health`, but accepts product-specific `overrides`. Use this
+for World Cup custom baskets with `overrides.worldCup.teamRefs`.
+
+### POST /products/:productKey/preview
+
+Preview a product investment.
+
+```json
+{
+  "amount": 100,
+  "userId": "uuid",
+  "overrides": {
+    "worldCup": {
+      "stageKey": "r48-32",
+      "teamRefs": ["BRAZIL", "ARGENTINA"],
+      "exitAfterStageKey": "final"
+    }
+  }
+}
+```
+
+Response fields include `productKey`, `productKind`, `totalDeposit`,
+`effectiveAmount`, `swapFee`, `totalAllocated`, `items[]`, `droppedStrikes[]`,
+`minimumDepositRequired`, `eventSlug`, and `eventTitle`.
+
+World Cup custom/preset override responses can also include
+`normalizedWorldCupConfig` and `strategyHash`. Keep the exact `strategyHash` for
+the subsequent `invest` signature.
+
+### POST /products/:productKey/invest
+
+Execute product investment. Requires EIP-712 signature.
+
+```json
+{
+  "userId": "uuid",
+  "productKey": "worldcup-2026:custom:r48-32",
+  "amount": 100,
+  "slippage": 0.02,
+  "autoCompound": true,
+  "strategyHash": "0x...",
+  "overrides": { "worldCup": { "teamRefs": ["BRAZIL"] } },
+  "signature": "0x...",
+  "nonce": 1780314666123
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| productKey | Yes | Must match the URL path and signed message |
+| amount | Yes | USD amount; business minimum is $10 |
+| slippage | No | 0.001–0.1, default 0.02 |
+| autoCompound | No | Enables TACO reinvest or World Cup auto-roll when the product supports it; not signed |
+| strategyHash | Conditional | Required when `overrides.worldCup` is present |
+| overrides | No | Product-specific options such as World Cup teams/exit stage |
+
+Use `ProductInvest` signing for ordinary products. Use
+`ProductInvestConfigured` when the request contains `overrides.worldCup`.
+
+Response fields mirror preview and add `depositId`, `hasPlacedOrders`,
+`overallStatus`, `createdAt`, and per-item order execution fields such as
+`orderId`, `orderStatus`, `filledAmount`, `filledShares`, `closeStatus`,
+`closedShares`, `remainingShares`, and `failReason`.
+
+### POST /products/:productKey/redeem
+
+Early-exit all FILLED positions for a product. Requires EIP-712
+`ProductRedeem`.
+
+```json
+{ "userId": "uuid", "productKey": "narrative-basket:taco-v1", "slippage": 0.02, "signature": "0x...", "nonce": 1780314719456 }
+```
+
+Response: `sold`, `totalReceived`, `totalCost`, `profit`, `fee`,
+`closeStatus`, `results[]`. Fee is 5% of positive profit.
+
+### POST /products/:productKey/stop-rolling
+
+Stops a World Cup auto-roll chain and releases application-level locked cash.
+No EIP-712 signature is required because no transfer occurs.
+
+```json
+{ "userId": "uuid", "productKey": "worldcup-2026:custom:r48-32" }
+```
+
+### GET /products/worldcup-2026/catalog
+
+Returns World Cup entry presets, custom basket options, teams, exit stages, and
+the schedule gate. Use it before World Cup preview/invest UI.
+
+### GET /portfolio/products
+
+Product-level holdings list.
+
+```
+GET /portfolio/products?userId=uuid&family=worldcup-2026
+```
+
+### GET /portfolio/products/:productKey
+
+Single product portfolio. Returns standard metrics plus `clusters[]` for
+managed products and `teams[]` for World Cup products.
+
+---
+
 ## Index Investment
+
+Legacy `/index/*` endpoints remain for asset-direction products. New product
+pages should prefer `/products/:productKey/*`.
 
 ### POST /index/preview
 
@@ -282,10 +478,10 @@ Preview strike allocation before investing.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | indexType | enum | Yes | BULLISH or BEARISH |
-| amount | number | Yes | Investment amount ($), min 10 |
+| amount | number | Yes | Preview amount ($), DTO minimum 1 |
 | asset | string | No | Asset symbol (default: BTC) |
 | eventSlug | string | No | Override default current-month event |
-| userId | string | No | When provided, calculates swap fee if USDC→USDC.e conversion is needed |
+| userId | string | No | When provided, estimates collateral preparation fees from the user's balances |
 
 **Response:**
 
@@ -334,16 +530,16 @@ Preview strike allocation before investing.
 ### POST /index/invest
 
 Execute index investment. Uses FAK (Fill-and-Kill) market orders that fill
-immediately against available liquidity. If USDC.e balance is insufficient
-but native USDC is available, an automatic Uniswap V3 swap is performed
-before placing orders.
+immediately against available liquidity. If pUSD balance is insufficient, the
+backend prepares collateral by wrapping USDC.e and, if needed, swapping native
+USDC to USDC.e first.
 
 > Requires EIP-712 signature (`Invest` type). See [Signature Authentication](#signature-authentication).
 
 **Request:**
 
 ```json
-{ "userId": "uuid", "indexType": "BULLISH", "amount": 100, "asset": "BTC", "signature": "0x...", "nonce": 1740643200000 }
+{ "userId": "uuid", "indexType": "BULLISH", "amount": 100, "asset": "BTC", "slippage": 0.02, "signature": "0x...", "nonce": 1740643200000 }
 ```
 
 | Field | Type | Required | Description |
@@ -353,6 +549,7 @@ before placing orders.
 | amount | number | Yes | Investment amount ($), min 10 |
 | asset | string | No | Asset symbol (default: BTC) |
 | eventSlug | string | No | Override default current-month event |
+| slippage | number | No | 0.001–0.1, default 0.02 |
 | signature | string | Yes | EIP-712 signature |
 | nonce | number | Yes | `Date.now()` millisecond timestamp (single-use) |
 
@@ -366,6 +563,7 @@ before placing orders.
   "indexType": "BULLISH",
   "totalDeposit": 100,
   "totalAllocated": 98.50,
+  "hasPlacedOrders": false,
   "allocations": [
     {
       "strikePrice": 90000,
@@ -376,7 +574,13 @@ before placing orders.
       "weight": 0.35,
       "allocation": 35.00,
       "orderId": "order-abc",
-      "orderStatus": "FILLED"
+      "orderStatus": "FILLED",
+      "filledAmount": 35.00,
+      "filledShares": 50.0,
+      "closeStatus": null,
+      "closedShares": 0,
+      "remainingShares": 50.0,
+      "failReason": null
     }
   ],
   "droppedStrikes": ["↑ 120,000"],
@@ -426,21 +630,22 @@ All index deposits for the user.
 ### POST /index/redeem
 
 Early redeem all active positions for a direction. Market-sells via CLOB FAK
-orders. A 2% fee is charged on profit.
+orders. A 5% fee is charged on positive profit.
 
 > Requires EIP-712 signature (`Redeem` type). See [Signature Authentication](#signature-authentication).
 
 **Request:**
 
 ```json
-{ "userId": "uuid", "direction": "BULLISH", "asset": "BTC", "signature": "0x...", "nonce": 1740643200000 }
+{ "userId": "uuid", "direction": "BULLISH", "asset": "BTC", "slippage": 0.02, "signature": "0x...", "nonce": 1740643200000 }
 ```
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | userId | string | Yes | User ID |
 | direction | enum | Yes | BULLISH or BEARISH |
-| asset | string | No | Asset symbol (default: BTC) |
+| asset | string | Yes | Asset symbol; required by signature validation |
+| slippage | number | No | 0.001–0.1, default 0.02 |
 | signature | string | Yes | EIP-712 signature |
 | nonce | number | Yes | `Date.now()` millisecond timestamp (single-use) |
 
@@ -452,9 +657,24 @@ orders. A 2% fee is charged on profit.
   "totalReceived": 35.12,
   "totalCost": 30.00,
   "profit": 5.12,
-  "fee": 0.10,
+  "fee": 0.26,
+  "closeStatus": "COMPLETED",
   "results": [
-    { "tokenId": "12345...", "title": "↑ 90,000", "shares": 50.5, "sellPrice": 0.65, "received": 32.83, "status": "SOLD" }
+    {
+      "tokenId": "12345...",
+      "title": "What price will Bitcoin hit in March?",
+      "groupItemTitle": "↑ 90,000",
+      "shares": 50.5,
+      "requestedShares": 50.5,
+      "soldShares": 50.5,
+      "closedShares": 50.5,
+      "remainingShares": 0,
+      "sellPrice": 0.65,
+      "received": 32.83,
+      "status": "SOLD",
+      "closeStatus": "COMPLETED",
+      "nextRetryAt": null
+    }
   ]
 }
 ```
@@ -464,11 +684,12 @@ orders. A 2% fee is charged on profit.
 | sold | Number of allocations successfully sold |
 | totalReceived | Actual USDC.e received (on-chain balance delta) |
 | profit | totalReceived - totalCost |
-| fee | 2% of profit (only when profit > 0) |
+| fee | 5% of positive profit |
+| closeStatus | COMPLETED / RETRYING / NEEDS_REVIEW / PENDING / NO_ACTION |
 | results[].status | SOLD / PLACED / REJECTED / NO_BIDS / SKIPPED / ERROR |
 
-**Auto-redemption**: Resolved markets are automatically redeemed every hour
-by a cron job. This endpoint is only for pre-settlement exits.
+**Auto-redemption**: Resolved markets are automatically scanned every 15
+minutes by a cron job. This endpoint is only for pre-settlement exits.
 
 ---
 
@@ -484,6 +705,7 @@ Daily return data. Limited to the last 6 months.
 |-------|------|----------|-------------|
 | month | string | Yes | Format: `YYYY-MM` |
 | asset | string | No | Asset symbol (default: BTC) |
+| live | boolean | No | Calculate live values where supported |
 
 **Response:**
 
@@ -581,6 +803,7 @@ strikePrices includes both UP and DOWN directions regardless of indexType.
   "unrealizedPnl": 15.50,
   "realizedPnl": 5.00,
   "pnl": 20.50,
+  "untrackedPnl": 0,
   "totalReturn": 0.0205,
   "returnChart": [
     { "timestamp": "2026-03-12T01:00:00.000Z", "totalReturn": 0.018 }
@@ -596,10 +819,11 @@ strikePrices includes both UP and DOWN directions regardless of indexType.
 | nav | Net asset value = position market value + available balance |
 | deployedPrincipal | Active + redeemed positions' cost |
 | positionValue | Current market value of active positions |
-| availableBalance | Total USDC available in Safe wallet (USDC.e + native USDC) |
+| availableBalance | Available wallet collateral/cash balance in USD terms |
 | unrealizedPnl | Active position value - active position cost |
 | realizedPnl | Sum of redeemed amounts - redeemed position cost |
 | pnl | unrealizedPnl + realizedPnl |
+| untrackedPnl | Polymarket Data API PnL for wallet positions/closed positions not tracked by DB allocations |
 | totalReturn | pnl / deployedPrincipal (0.0205 = 2.05%) |
 
 returnChart granularity: 24h → hourly, 7d/30d/all → daily.
@@ -640,18 +864,11 @@ Per-direction (BULLISH / BEARISH) investment metrics.
 
 ## Accounting
 
-### GET /accounting/:userId/positions
+The current backend does not expose public accounting read endpoints. Use:
 
-Current positions with unrealizedPnL.
-
-### GET /accounting/:userId/trades?limit=50
-
-Trade history.
-
-### GET /accounting/:userId/pnl
-
-P&L report: totalDeposits, totalWithdrawals, currentBalance,
-totalRealizedPnL, totalUnrealizedPnL, returnPercentage.
+- `GET /portfolio` for aggregate NAV/PnL
+- `GET /portfolio/breakdown` for legacy BULLISH/BEARISH metrics
+- `GET /portfolio/products` and `GET /portfolio/products/:productKey` for product-level views
 
 ---
 
@@ -659,7 +876,7 @@ totalRealizedPnL, totalUnrealizedPnL, returnPercentage.
 
 Write endpoints (`invest`, `withdraw`, `redeem`) require EIP-712 typed data
 signatures from the user's connected wallet. The backend recovers the signer
-address and compares it to the `walletAddress` registered for the `userId`.
+address and compares it to the registered user wallet or wallet owner address.
 
 **Domain:**
 
@@ -673,18 +890,26 @@ address and compares it to the `walletAddress` registered for the `userId`.
 |--------|--------|
 | Invest | `action: "invest"`, `userId`, `indexType`, `amount: uint256` (6 decimals), `nonce: uint256` |
 | Withdraw | `action: "withdraw"`, `userId`, `toAddress`, `amount: uint256` (6 decimals), `nonce: uint256` |
-| Redeem | `action: "redeem"`, `userId`, `direction`, `nonce: uint256` |
+| Redeem | `action: "redeem"`, `userId`, `direction`, `asset`, `nonce: uint256` |
+| ProductInvest | `action: "productInvest"`, `userId`, `productKey`, `amount: uint256` (6 decimals), `nonce: uint256` |
+| ProductInvestConfigured | `action: "productInvestConfigured"`, `userId`, `productKey`, `amount: uint256` (6 decimals), `strategyHash: bytes32`, `nonce: uint256` |
+| ProductRedeem | `action: "productRedeem"`, `userId`, `productKey`, `nonce: uint256` |
 
-**Nonce**: Use `Date.now()` (millisecond timestamp). Valid within a 5-minute
-window from server time. **Each nonce is single-use** — reusing a nonce returns
-400 "Nonce already used".
+Use `ProductInvestConfigured` whenever `POST /products/:productKey/invest`
+contains `overrides.worldCup`; the `strategyHash` must come from preview and
+match the normalized World Cup config.
+
+**Nonce**: Use `Date.now()` (millisecond timestamp). Valid from
+`now - 5 minutes` through a small future skew (default 2 seconds). **Each
+`(userId, nonce)` is single-use** — reusing a nonce returns 400
+"Nonce already used".
 
 **Errors:**
 
 | HTTP | Message |
 |------|---------|
 | 400 | Missing signature/userId/nonce |
-| 400 | Signature expired (nonce > 5 min from server time) |
+| 400 | Signature expired or nonce too far in the future |
 | 400 | Nonce already used (replay protection) |
 | 401 | Signature does not match user wallet address |
 
