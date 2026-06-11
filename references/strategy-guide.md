@@ -10,6 +10,7 @@
 - [Weight Calculation](#weight-calculation) — allocation algorithm
 - [Iterative Pruning](#iterative-pruning) — minimum order constraints
 - [Order Execution](#order-execution) — FAK gasless orders
+- [Signing And Wallet Security](#signing-and-wallet-security) — Deposit Wallet, Safe, CLOB auth
 - [Settlement](#settlement) — monthly binary settlement
 - [Performance Scenarios](#performance-scenarios) — expected returns by scenario
 - [Risks](#risks) — key risk factors
@@ -141,6 +142,27 @@ all remaining strikes satisfy these constraints.
 - Collateral: **pUSD**, prepared from existing pUSD, USDC.e, or native USDC as needed
 - Slippage: orders use a bounded worst price; default slippage is 2%
 - Each strike is an independent order; one failure does not block others
+- The early per-user/platform active-position caps have been removed so
+  auto-compounding winners can keep rolling growing balances.
+
+---
+
+## Signing And Wallet Security
+
+- New users normally use Polymarket **Deposit Wallets** (`POLY_1271`); legacy
+  users may still use Safe (`POLY_GNOSIS_SAFE`).
+- The main API never decrypts owner EOA keys. It calls an isolated
+  signing-service that is the only service with AWS KMS decrypt permission and
+  access to `user_wallets.encryptedPrivateKey`.
+- Signing-service policy can run in `off`, `audit`, or `enforce` mode. It can
+  deny raw transaction signing, rate-limit signing, require mTLS, validate
+  relayer destination call data, and bind withdrawals to the user's EIP-712
+  `Withdraw` signature.
+- CLOB API key derivation must be signed by the owner EOA. Contract wallet
+  addresses should not be used as the CLOB L1 `POLY_ADDRESS`; Deposit Wallet
+  orders still use `POLY_1271` at the order layer.
+- CLOB order attribution uses `POLY_BUILDER_CODE`; gasless relayer operations
+  still require the Polymarket Builder HMAC trio for relayer HTTP auth.
 
 ---
 

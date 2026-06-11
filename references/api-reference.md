@@ -10,6 +10,11 @@
 > **Product abstraction**: New surfaces should prefer `/products/:productKey/*`.
 > Legacy `/index/*` endpoints remain for asset-direction compatibility.
 >
+> **Remote signing**: The main API does not hold KMS decrypt permission or
+> plaintext owner keys. It calls an isolated signing-service over an internal
+> authenticated channel. The signer can enforce mTLS, throttling, raw-tx deny,
+> CLOB auth/order checks, and withdraw destination policy.
+>
 > **Geo-restriction**: New-position endpoints return HTTP 403 `GEO_RESTRICTED`
 > in blocked or close-only regions. Close-only regions may still redeem and
 > withdraw. Read-only endpoints are unaffected.
@@ -101,7 +106,9 @@ Register or log in after signing the challenge.
 
 ### GET /wallets/:userId
 
-Full wallet info (ownerAddress, safeAddress, isDeployed, isApproved).
+Full wallet info (`ownerAddress`, `safeAddress`, `walletType`, `isDeployed`,
+`isApproved`). `walletType` can be `DEPOSIT_WALLET` for Polymarket Deposit
+Wallet users or `SAFE` for legacy Safe users.
 
 ### GET /wallets/:userId/balance
 
@@ -413,6 +420,9 @@ Execute product investment. Requires EIP-712 signature.
 
 Use `ProductInvest` signing for ordinary products. Use
 `ProductInvestConfigured` when the request contains `overrides.worldCup`.
+There is no per-user or platform active-position cap; auto-compounding can roll
+growing balances forward as long as the product remains eligible and collateral
+is available.
 
 Response fields mirror preview and add `depositId`, `hasPlacedOrders`,
 `overallStatus`, `createdAt`, and per-item order execution fields such as
@@ -898,6 +908,24 @@ address and compares it to the registered user wallet or wallet owner address.
 Use `ProductInvestConfigured` whenever `POST /products/:productKey/invest`
 contains `overrides.worldCup`; the `strategyHash` must come from preview and
 match the normalized World Cup config.
+
+### Internal Signing Service Notes
+
+These are operator/debugging notes for CLOB and relayed transaction failures:
+
+- Main API signs through `RemoteSigner`; plaintext owner EOA keys never appear
+  in the main app process.
+- CLOB API key derivation (`ClobAuth`) must be signed by the owner EOA. Do not
+  set CLOB L1 `POLY_ADDRESS` to a Deposit Wallet or Safe contract address; it
+  causes `Invalid L1 Request headers` / malformed API credentials.
+- Deposit Wallet order signing uses `POLY_1271`; Safe users use
+  `POLY_GNOSIS_SAFE`.
+- Signing-service policy mode is `off | audit | enforce`. In `audit`, denied
+  policy decisions are logged but not blocked; in `enforce`, disallowed
+  destinations/selectors/CLOB domains are rejected.
+- Raw transaction signing is disabled by default (`SIGNER_ALLOW_RAW_TX=false`).
+- Withdraw signatures are re-checked by the signing-service for destination,
+  amount, token, and chain binding before external transfers are signed.
 
 **Nonce**: Use `Date.now()` (millisecond timestamp). Valid from
 `now - 5 minutes` through a small future skew (default 2 seconds). **Each

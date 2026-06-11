@@ -5,10 +5,11 @@ description: >-
   Polymarket. Supports asset-direction indices, NarrativeBasket products such
   as TACO, and World Cup 2026 bracket products. Provides wallet management,
   pUSD collateral preparation, Bullish/Bearish/product preview and execution,
-  portfolio monitoring, performance returns, chart data, and withdrawals. Use
-  when the user mentions crypto/commodity index investing, prediction markets,
-  Polymarket, portfolio performance, USDC/pUSD balance, deposits, withdrawals,
-  productKey, TACO, World Cup brackets, or strike price allocation.
+  portfolio monitoring, performance returns, chart data, withdrawals, and
+  remote signing policy. Use when the user mentions crypto/commodity index
+  investing, prediction markets, Polymarket, portfolio performance, USDC/pUSD
+  balance, deposits, withdrawals, productKey, TACO, World Cup brackets, CLOB
+  auth, signing service, or strike price allocation.
 ---
 
 # Narrative Index — Agent Skill
@@ -17,9 +18,10 @@ description: >-
 
 Polyvaults is a custodial Polymarket index platform. It supports legacy
 asset-direction indices (`BTC/OIL/ETH` Bullish/Bearish), managed baskets such as
-TACO, and World Cup 2026 bracket products. Each user gets a segregated wallet
-managed by the platform. Trades are executed as gasless FAK market orders via
-Polymarket CLOB V2 with builder attribution.
+TACO, and World Cup 2026 bracket products. Each user gets a segregated
+Polymarket Deposit Wallet or legacy Safe managed by the platform. Trades are
+executed as gasless FAK market orders via Polymarket CLOB V2 with builder
+attribution.
 
 - **Base URL**: `https://api.polyvaults.ai`
 - **Network**: Polygon
@@ -27,15 +29,20 @@ Polymarket CLOB V2 with builder attribution.
   investment preparation wraps/converts them into pUSD when needed.
 - **Auth model**: All requests identify the user by `userId` (UUID), obtained
   through `connect_wallet` after an EIP-191 challenge signature.
-- **Signature auth**: Write endpoints (`invest`, `withdraw`, `redeem`) require
-  EIP-712 typed data signatures from the user's connected wallet.
+- **User signature auth**: Write endpoints (`invest`, `withdraw`, `redeem`)
+  require EIP-712 typed data signatures from the user's connected wallet.
+- **Remote signing**: The main API never holds KMS decrypt permission or
+  plaintext owner keys. A separate signing-service signs EIP-191/EIP-712
+  payloads over an internal authenticated channel, with optional mTLS, rate
+  limits, and destination/signature policy enforcement.
 - **Geo-restriction**: New-position endpoints are blocked in restricted
   countries/regions. Close-only regions may redeem/withdraw but cannot open new
   positions. Read-only endpoints are unaffected.
 - **Rate limiting**: Global rate limits apply — 10 requests/second and
   100 requests/minute per IP.
-- **Key encryption**: Wallet private keys are encrypted at rest using AWS KMS
-  (AES-256 symmetric encryption via AWS KMS API).
+- **CLOB auth**: CLOB API keys are derived with the owner EOA. For Deposit
+  Wallets, the CLOB order itself uses `POLY_1271`; contract wallets are not
+  used as the L1 `POLY_ADDRESS` for `/auth/api-key`.
 
 ### Supported Assets
 
@@ -480,7 +487,8 @@ can include `normalizedWorldCupConfig` and `strategyHash`; keep these for
 ### 19. invest_product
 
 Current recommended investment endpoint. Creates a deposit, prepares pUSD, and
-places FAK orders.
+places FAK orders. There is no per-user or platform active-position cap; the
+business minimum remains $10.
 
 ```
 POST /products/:productKey/invest
@@ -662,9 +670,14 @@ GET /products/worldcup-2026/catalog
 - **Weight formula**: INDEX products weight by market liquidity and price.
   TACO weights by eligible event OI. World Cup weights by sub-market OI times
   buy price.
-- **Wallet**: Platform-managed wallet on Polygon. Users never hold the
-  operational private key; signing is handled by encrypted owner keys / remote
-  signing infrastructure.
+- **Wallet**: New users normally use a Polymarket Deposit Wallet
+  (`POLY_1271`); legacy users may still use a Safe (`POLY_GNOSIS_SAFE`). Users
+  never hold the operational owner key; all owner EOA signing is delegated to
+  the isolated signing-service.
+- **Signing service policy**: The signer can run in `off`, `audit`, or
+  `enforce` policy mode. It allows CLOB auth/order signing only when the
+  `policyContext` proves the owner EOA, maker wallet, chain, domain, and
+  destination are expected. Raw transaction signing is disabled by default.
 - **pUSD collateral**: Trading uses pUSD. The platform accepts USDC.e and
   native USDC deposits and prepares pUSD through wrapping/swap flows. Wallet
   balance includes pUSD, USDC.e, native USDC, locked balance, and withdrawable

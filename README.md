@@ -1,4 +1,4 @@
-# Narrative Index — Agent Skill
+# Polyvaults Index — Agent Skill
 
 An AI Agent Skill for operating [Polyvaults](https://polyvaults.ai) — a custodial Polymarket index platform covering asset-direction indices, NarrativeBasket products such as TACO, and World Cup 2026 bracket products.
 
@@ -15,6 +15,7 @@ This Skill enables AI agents (Claude, Cursor, etc.) to autonomously manage the f
 - **Withdrawals** — withdraw to Polygon or cross-chain (ETH, Arbitrum, Base, Optimism, BSC, Solana)
 - **Early redemption** — market-sell active positions before settlement with 5% profit fee on positive profit
 - **Auto-redemption / auto-roll** — resolved markets are redeemed to pUSD; TACO and World Cup products can auto-compound/roll when enabled
+- **Remote signing awareness** — account for Deposit Wallet vs Safe signing, CLOB auth, and signing-service policy enforcement when debugging orders
 
 ## Installation
 
@@ -147,6 +148,14 @@ Upload via the `/v1/skills` endpoint. See the [Skills API documentation](https:/
 | `withdraw_status` | `GET /wallets/withdraw-status/:addr` | Track cross-chain withdrawal progress |
 | `supported_chains` | `GET /wallets/supported-chains` | List supported withdrawal chains |
 | `early_redeem` | `POST /index/redeem` | Legacy asset+direction market-sell (requires signature) |
+
+## Security Notes
+
+- The main API server does not hold AWS KMS decrypt permission or plaintext owner keys.
+- All operational owner EOA signatures go through the isolated signing-service.
+- New users normally use Polymarket Deposit Wallets (`POLY_1271`); legacy users may still use Safe (`POLY_GNOSIS_SAFE`).
+- CLOB API-key auth is signed by the owner EOA, while Deposit Wallet orders use `POLY_1271`.
+- Product investments no longer enforce per-user/platform active-position caps; auto-compounding can roll growing balances forward.
 
 ## API Base URL
 
