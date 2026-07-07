@@ -75,9 +75,18 @@ Register or log in after signing the challenge.
   "walletAddress": "0x1234567890abcdef1234567890abcdef12345678",
   "signature": "0x...",
   "challenge": "Sign this message to verify your wallet ownership.\n\nAddress: 0x...\nNonce: ...",
-  "inviteCode": "OPTIONAL"
+  "inviteCode": "OPTIONAL",
+  "chainId": 8453
 }
 ```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| walletAddress | Yes | EVM address that signed the challenge |
+| signature | Yes | EIP-191 `personal_sign` of `challenge` |
+| challenge | Yes | From `GET /auth/challenge` |
+| inviteCode | No | Referrer's permanent code; binding only at first registration |
+| chainId | No | Wallet's current chain (e.g. Base `8453`); speeds Smart Wallet verify |
 
 **Response:**
 
@@ -91,6 +100,7 @@ Register or log in after signing the challenge.
   "isApproved": true,
   "isNewUser": false,
   "twitterHandle": null,
+  "sessionToken": "64-char-hex",
   "createdAt": "2026-03-12T08:00:00.000Z"
 }
 ```
@@ -101,8 +111,9 @@ Register or log in after signing the challenge.
 | safeAddress | Platform-managed wallet address |
 | depositAddress | Same as safeAddress; send USDC or USDC.e here |
 | isNewUser | true on first connect |
+| isDeployed / isApproved | Wallet provisioning status; retry connect if false |
 | twitterHandle | Linked Twitter handle if available |
-| sessionToken | 7-day bearer token for Campaign write endpoints (non-fund actions) |
+| sessionToken | 7-day bearer token for Campaign writes |
 
 ### POST /auth/logout
 
@@ -373,13 +384,16 @@ asset-direction indices and managed products.
 
 ### GET /products
 
-Returns all registered products.
+Returns all registered INDEX and MANAGED products.
+
+```
+GET /products
+```
 
 ```json
 [
   { "productKey": "btc-bullish", "productKind": "INDEX", "displayName": "BTC Bullish", "asset": "BTC", "indexDirection": "BULLISH" },
-  { "productKey": "narrative-basket:taco-v1", "productKind": "MANAGED", "displayName": "TACO Index" },
-  { "productKey": "worldcup-2026:custom:r48-32", "productKind": "MANAGED", "displayName": "World Cup 2026 — Custom to Knockouts" }
+  { "productKey": "narrative-basket:taco-v1", "productKind": "MANAGED", "displayName": "TACO Index" }
 ]
 ```
 
@@ -454,12 +468,12 @@ Execute product investment. Requires EIP-712 signature.
 | amount | Yes | USD amount; business minimum is $10 |
 | slippage | No | 0.001–0.1, default 0.02 |
 | autoCompound | No | Enables TACO reinvest or World Cup auto-roll when supported; **must be signed** in EIP-712 |
-| strategyHash | Conditional | Required when `overrides.worldCup` is present |
+| strategyHash | Conditional | Required for `overrides.worldCup` invests |
 | overrides | No | Product-specific options such as World Cup teams/exit stage |
 | signatureChainId | No | Wallet signing chain (e.g. Base `8453`); defaults to Polygon `137` |
 | fundsChainId | No | Funds execution chain; currently always `137` (Polygon) |
 
-Use `ProductInvest` signing for ordinary products. Use
+Use `ProductInvest` signing for ordinary INDEX/MANAGED products. Use
 `ProductInvestConfigured` when the request contains `overrides.worldCup`.
 `autoCompound` is part of the typed-data message (sign `false` when disabled).
 There is no per-user or platform active-position cap; auto-compounding can roll
@@ -1113,9 +1127,9 @@ during rollout but unsuitable for Base Smart Wallet users.
 | TwitterUnlink | `action: "twitterUnlink"`, `userId`, `nonce` |
 
 Use `ProductInvestConfigured` whenever `POST /products/:productKey/invest`
-contains `overrides.worldCup`; the `strategyHash` must come from preview and
-match the normalized World Cup config. Sign `autoCompound: false` explicitly
-when the checkbox is unchecked.
+contains `overrides.worldCup`; the hash must come from preview or definition
+and match the normalized configuration. Sign `autoCompound: false`
+explicitly when the checkbox is unchecked.
 
 Withdraw: sign the **final** `token` and `chain` values that will be sent in
 the request body (defaults: `USDC.e` / `polygon`).

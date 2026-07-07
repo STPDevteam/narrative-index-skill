@@ -9,7 +9,7 @@ This Skill enables AI agents (Claude, Cursor, etc.) to autonomously manage the f
 - **Asset discovery** — browse available assets, check market status and liquidity
 - **Wallet management** — challenge-based wallet connect, deposit addresses, pUSD/USDC balances, locked and withdrawable funds
 - **Index investing** — preview allocations and execute Bullish/Bearish asset-direction products
-- **Product investing** — operate `/products/:productKey/*` for TACO, World Cup, and new INDEX product pages
+- **Product investing** — operate `/products/:productKey/*` for TACO, World Cup, and INDEX products
 - **Portfolio monitoring** — NAV, PnL, total return, daily performance data, per-asset and per-product breakdowns
 - **World Cup positions** — auto-roll chains, locks, retry/stop-rolling via signed endpoints
 - **Referral rewards** — permanent referral codes, fee split, reward dashboard
@@ -124,7 +124,8 @@ Upload via the `/v1/skills` endpoint. See the [Skills API documentation](https:/
 
 | Tool | Endpoint | Description |
 |------|----------|-------------|
-| `connect_wallet` | `GET /auth/challenge`, `POST /auth/connect` | Register/login; returns `sessionToken` + optional referral binding |
+| `connect_wallet` | `GET /auth/challenge`, `POST /auth/connect` | Register/login; returns `sessionToken`, wallet readiness flags |
+| `get_wallet_info` | `GET /wallets/:userId` | Wallet type, `isDeployed`, `isApproved` |
 | `get_wallet_balance` | `GET /wallets/:userId/balance` | Query USDC.e + native USDC + pUSD + locked/withdrawable balances |
 | `get_deposit_address` | `GET /wallets/:userId/deposit-address` | Get deposit address (accepts USDC & USDC.e) |
 | `get_assets` | `GET /assets` | List all registered assets with status |
@@ -134,7 +135,7 @@ Upload via the `/v1/skills` endpoint. See the [Skills API documentation](https:/
 | `get_positions` | `GET /index/positions/:userId` | View index positions (includes asset info) |
 | `get_portfolio` | `GET /portfolio?userId=` | NAV/PnL/totalReturn dashboard (supports `asset` filter) |
 | `get_portfolio_breakdown` | `GET /portfolio/breakdown` | Per-direction metrics (supports `asset` filter) |
-| `list_products` | `GET /products` | List productKey-based INDEX and MANAGED products |
+| `list_products` | `GET /products` | List INDEX and MANAGED products |
 | `get_product_definition` | `GET /products/:productKey/definition` | Product metadata and managed basket definitions |
 | `get_product_health` | `GET /products/:productKey/health` | Tradability and per-strike health |
 | `preview_product` | `POST /products/:productKey/preview` | Recommended product preview endpoint |

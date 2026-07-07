@@ -3,8 +3,7 @@ name: narrative-index
 description: >-
   Operates a custodial multi-asset directional index investment platform on
   Polymarket. Supports asset-direction indices, NarrativeBasket products such
-  as TACO, and World Cup 2026 bracket products. Provides wallet management,
-  pUSD collateral preparation, Bullish/Bearish/product preview and execution,
+  as TACO, World Cup 2026 bracket products. Provides wallet management,
   portfolio monitoring, performance returns, chart data, withdrawals, referral
   rewards, World Cup auto-roll chain management, remote signing policy, and
   multi-chain wallet EIP-712 V2 signatures. Use when the user mentions
@@ -68,6 +67,29 @@ For strategy mechanics see [references/strategy-guide.md](references/strategy-gu
 
 ---
 
+## Agent User Journey (end-to-end)
+
+| Phase | Goal | Primary tools |
+|-------|------|---------------|
+| 1. Onboard | Create user + custodial wallet | `connect_wallet` |
+| 2. Fund | Get deposit address, confirm balance | `get_deposit_address`, `get_wallet_balance` |
+| 3. Discover | Pick asset/product, check tradability | `get_assets`, `get_market_status`, `list_products`, `get_product_health` |
+| 4. Preview | Show allocation before signing | `preview_product` or `preview_index` |
+| 5. Invest | EIP-712 sign + execute | `invest_product` or `invest_index` |
+| 6. Monitor | Dashboard NAV/PnL/holdings | `get_portfolio`, `get_product_portfolios`, `get_product_portfolio` |
+| 7. Exit / cash out | Early redeem or withdraw | `redeem_product` / `early_redeem`, `withdraw` |
+
+**Deposits** are on-chain transfers to `depositAddress` on Polygon (USDC or
+USDC.e). There is no backend "deposit" write API — poll `get_wallet_balance`
+until funds arrive. Cross-chain deposits use Fun.xyz / Relay.link proxies
+(documented in api-reference).
+
+**First connect** may return `isDeployed: false` or `isApproved: false` while
+the platform wallet is still provisioning. Retry `connect_wallet` after a few
+seconds, or call `get_wallet_info` until both are true before investing.
+
+---
+
 ## Available Tools
 
 ### 1. connect_wallet
@@ -79,12 +101,19 @@ signature. First-time connect auto-creates a user record and wallet.
 ```
 GET /auth/challenge?address=0x...
 POST /auth/connect
-Body: { "walletAddress": "0x...", "signature": "0x...", "challenge": "...", "inviteCode": "optional" }
+Body: { "walletAddress": "0x...", "signature": "0x...", "challenge": "...", "inviteCode": "optional", "chainId": 8453 }
 ```
 
-Returns `userId`, `safeAddress`, `depositAddress`, `isNewUser`,
-`twitterHandle`, `sessionToken`. Optional `inviteCode` binds referral at
-first registration only.
+Optional `chainId` — wallet's current EVM chain (e.g. Base `8453`). Recommended
+for Smart Wallet users to speed up signature verification.
+
+Returns `userId`, `safeAddress`, `depositAddress`, `isDeployed`, `isApproved`,
+`isNewUser`, `twitterHandle`, `sessionToken`. Optional `inviteCode` binds
+referral at first registration only. Store `sessionToken` for Campaign writes
+(`Authorization: Bearer <sessionToken>`).
+
+If `isDeployed` or `isApproved` is false, wallet provisioning is still in
+progress — retry connect or poll `get_wallet_info` before invest.
 
 ```bash
 curl 'https://api.polyvaults.ai/auth/challenge?address=0x1234...abcd'
@@ -92,6 +121,20 @@ curl -X POST https://api.polyvaults.ai/auth/connect \
   -H 'Content-Type: application/json' \
   -d '{"walletAddress":"0x1234...abcd","signature":"0x...","challenge":"Sign this message..."}'
 ```
+
+---
+
+### 2a. get_wallet_info
+
+Full wallet metadata including deployment/approval status and wallet type.
+
+```
+GET /wallets/:userId
+```
+
+Returns `ownerAddress`, `safeAddress`, `walletType` (`DEPOSIT_WALLET` or
+`SAFE`), `isDeployed`, `isApproved`. Use after first connect to confirm the
+wallet is ready for trading.
 
 ---
 
@@ -436,14 +479,14 @@ curl https://api.polyvaults.ai/assets
 
 ### 15. list_products
 
-List all registered investment products. Current product families include:
-
-- INDEX products: `btc-bullish`, `btc-bearish`, `eth-bullish`, `oil-bullish`, etc.
-- MANAGED products: `narrative-basket:taco-v1`, `worldcup-2026:*`.
+List all registered investment products (INDEX and MANAGED families).
 
 ```
 GET /products
 ```
+
+Current families include `btc-bullish`, `narrative-basket:taco-v1`,
+`worldcup-2026:*`, etc.
 
 ```bash
 curl https://api.polyvaults.ai/products
@@ -495,6 +538,20 @@ For World Cup custom baskets, pass `overrides.worldCup.teamRefs`. The response
 can include `normalizedWorldCupConfig` and `strategyHash`; keep these for
 `invest_product`.
 
+**Preview fields agents should surface:**
+
+| Field | Use |
+|-------|-----|
+| `items[]` / `allocations[]` | Per-market/strike allocation, weight, buy price |
+| `droppedStrikes[]` | Markets pruned (OI, min order, price bounds) |
+| `effectiveAmount` / `swapFee` | Net investable amount after collateral prep |
+| `minimumDepositRequired` | Min amount to keep all eligible legs |
+| `strategyHash` | Required for World Cup custom basket invest |
+| `eventTitle` / `eventSlug` | Context for INDEX products |
+
+Call `get_product_health` first when you need tradability / drop reasons before
+preview.
+
 ---
 
 ### 19. invest_product
@@ -508,10 +565,10 @@ POST /products/:productKey/invest
 Body: { "userId": "...", "productKey": "...", "amount": 100, "slippage": 0.02, "autoCompound": false, "strategyHash": "0x...", "overrides": { ... }, "signature": "0x...", "nonce": 1740643200000 }
 ```
 
-Requires EIP-712 `ProductInvest` signature. If `overrides.worldCup` is present,
-sign `ProductInvestConfigured` and include the preview `strategyHash`.
+Requires EIP-712 `ProductInvest` signature. Use `ProductInvestConfigured` when
+the request contains `overrides.worldCup` and include the preview `strategyHash`.
 `autoCompound` **must be signed** (`false` when disabled). Include
-`signatureChainId` (wallet chain) and `fundsChainId: 137` in the request body.
+`signatureChainId` and `fundsChainId: 137`.
 
 ---
 
@@ -635,24 +692,33 @@ GET /products/worldcup-2026/catalog
 
 ### Workflow 1 — New User Deposit & Invest
 
-1. **connect_wallet** — get challenge, sign it, then obtain `userId` and `depositAddress`
-2. Instruct the user to transfer USDC or USDC.e to `depositAddress` on Polygon
-   (both accepted; collateral is prepared into pUSD at invest time)
-3. **get_wallet_balance** — confirm deposit arrived; show `withdrawableBalance`
-4. **list_products** or **get_assets** — choose a product or active asset
-5. Prefer **preview_product** for new UI; use **preview_index** only for legacy
-   asset-direction flows
-6. Sign the right EIP-712 action, then call **invest_product** or **invest_index**
-   - If `PARTIAL`, inform the user which strikes failed
-   - If `hasPlacedOrders`, tell the user fills are still syncing
+1. **connect_wallet** — challenge → sign → obtain `userId`, `depositAddress`,
+   `sessionToken`; retry if `isDeployed`/`isApproved` are false
+2. **get_deposit_address** (or use `depositAddress` from connect) — instruct user
+   to send USDC or USDC.e on Polygon; no backend deposit API exists
+3. **get_wallet_balance** — poll until `withdrawableBalance` reflects the deposit
+4. **get_assets** + **get_market_status** — confirm asset is `active`
+5. **list_products** or **get_assets** — choose a product or active asset
+6. **get_product_health** (optional) — check tradability / drop reasons
+7. **preview_product** (preferred) or **preview_index** — show `items[]`,
+   `droppedStrikes[]`, `minimumDepositRequired`, `effectiveAmount`
+8. Sign EIP-712 (`ProductInvest`, `ProductInvestConfigured`, or legacy `Invest`)
+   then **invest_product** or **invest_index**
+   - If `PARTIAL`, inspect per-item `orderStatus` / `failReason`
+   - If `hasPlacedOrders`, fills are still syncing (cron every 5 min)
 
-### Workflow 2 — Check Investment Performance
+### Workflow 2 — Check Investment Performance (Dashboard)
 
-1. **get_portfolio** — show NAV, PnL, totalReturn (optionally filter by `asset`)
-2. **get_product_portfolios** — show product-level holdings when the UI is product-based
-3. **get_product_portfolio** — show a TACO/World Cup/INDEX product detail page
-4. **get_returns** — show daily benchmark index returns vs asset spot
-5. **get_positions** — show legacy per-strike deposits if needed
+1. **get_portfolio** — aggregate NAV, PnL, `totalReturn`, `returnChart`
+   (optionally `?asset=BTC` for per-direction breakdown)
+2. **get_portfolio_breakdown** — legacy BULLISH/BEARISH split per asset
+3. **get_product_portfolios** — all product holdings (`?family=worldcup-2026`
+   for World Cup list)
+4. **get_product_portfolio** — single product detail (clusters, teams, chart)
+5. **get_worldcup_positions** — World Cup auto-roll chains, locks, retry state
+6. **get_returns** — public benchmark daily returns vs asset spot (not user PnL)
+7. **get_positions** — legacy per-deposit strike detail if needed
+8. **get_chart** — price + strike context for asset-direction products
 
 ### Workflow 3 — Withdraw Funds (Polygon)
 
@@ -737,6 +803,10 @@ GET /products/worldcup-2026/catalog
   key in request bodies and EIP-712 messages.
 - **Product kinds**: `INDEX` products are asset + direction indices.
   `MANAGED` products include TACO and World Cup bracket baskets.
+- **Deposits**: On-chain only — send USDC/USDC.e to `depositAddress` on Polygon.
+  Balance updates via `get_wallet_balance`; no custodial deposit API.
+- **Preview before invest**: Always call preview to show allocation, dropped
+  markets, and `minimumDepositRequired` before asking the user to sign.
 - **IndexType**: `BULLISH` buys YES on "Will [asset] hit $X?" (upside).
   `BEARISH` buys YES on "Will [asset] drop below $X?" (downside).
 - **Minimum investment**: Product preview DTOs allow $1, but real invest
