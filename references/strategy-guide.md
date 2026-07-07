@@ -10,6 +10,7 @@
 - [Weight Calculation](#weight-calculation) — allocation algorithm
 - [Iterative Pruning](#iterative-pruning) — minimum order constraints
 - [Order Execution](#order-execution) — FAK gasless orders
+- [Signing And Wallet Security](#signing-and-wallet-security) — Deposit Wallet, Safe, CLOB auth
 - [Settlement](#settlement) — monthly binary settlement
 - [Performance Scenarios](#performance-scenarios) — expected returns by scenario
 - [Risks](#risks) — key risk factors
@@ -59,9 +60,11 @@ profitable settlements back into the same product.
 ### World Cup 2026 Brackets
 
 Managed products under `worldcup-2026:*`. They buy team sub-markets for a
-round, can use presets or custom `teamRefs`, and can auto-roll to the next
-stage when enabled. Cash waiting for a future round is exposed as
-`lockedBalance` until reinvested or released by `stop-rolling`.
+round, support presets (`europe`, `south-am`, `host-nations`, `top-seeded`) or
+custom `teamRefs`, and can auto-roll to the next stage when enabled. Users pick
+an `exitAfterStageKey` (group stage through final) to stop rolling after that
+stage settles. Cash waiting for a future round is `lockedBalance` until
+reinvested or released via signed `stop-rolling` (scoped by `rootDepositId`).
 
 ---
 
@@ -141,6 +144,33 @@ all remaining strikes satisfy these constraints.
 - Collateral: **pUSD**, prepared from existing pUSD, USDC.e, or native USDC as needed
 - Slippage: orders use a bounded worst price; default slippage is 2%
 - Each strike is an independent order; one failure does not block others
+- The early per-user/platform active-position caps have been removed so
+  auto-compounding winners can keep rolling growing balances.
+
+---
+
+## Signing And Wallet Security
+
+- New users normally use Polymarket **Deposit Wallets** (`POLY_1271`); legacy
+  users may still use Safe (`POLY_GNOSIS_SAFE`).
+- EIP-712 **V2** domain: `{ name: "Polyvaults", version: "2", chainId: signatureChainId }`.
+  Fund messages include `fundsChainId: 137` (Polygon execution). Base Smart
+  Wallet users sign on Base (`8453`) while funds execute on Polygon.
+- `autoCompound` is part of the invest typed-data message (not a post-sign flag).
+- World Cup `stop-rolling` and `retry-roll` require signatures with `rootDepositId`
+  to scope the action to one chain.
+- Withdraw signatures bind `token` and destination `chain` to prevent replay.
+- The main API never decrypts owner EOA keys. It calls an isolated
+  signing-service that is the only service with AWS KMS decrypt permission and
+  access to `user_wallets.encryptedPrivateKey`.
+- Signing-service policy can run in `off`, `audit`, or `enforce` mode. It can
+  deny raw transaction signing, rate-limit signing, require mTLS, validate
+  relayer destination call data, and bind withdrawals to the user's EIP-712
+  `Withdraw` signature.
+- CLOB API key derivation must be signed by the owner EOA. Contract wallet
+  addresses should not be used as the CLOB L1 `POLY_ADDRESS`; Deposit Wallet
+  orders still use `POLY_1271` at the order layer.
+- CLOB V2 uses per-order `POLY_BUILDER_CODE` for builder attribution.
 
 ---
 
@@ -154,8 +184,8 @@ all remaining strikes satisfy these constraints.
   (typically the 1st–3rd). The platform automatically handles late market
   creation.
 - Auto-redemption runs every 15 minutes, redeems resolved winning CTF tokens to
-  pUSD, and charges a 5% fee on positive profit. Referral users may split that
-  fee with the platform.
+  pUSD, and charges a 5% fee on positive profit. Users with a referrer split
+  the fee: 2.5% platform + 2.5% referrer (accrued, manual monthly payout).
 - Auto-compound products can reinvest net proceeds automatically. TACO rolls
   back into itself; World Cup products can roll into the next stage product
   when the schedule gate is open.
@@ -194,7 +224,8 @@ all remaining strikes satisfy these constraints.
 6. **Collateral/routing risk** — investments rely on pUSD wrapping, CLOB V2,
    relayer behavior, and bridge/swap paths.
 7. **Auto-roll risk** — World Cup rolling may pause with locked cash when the
-   next stage is not yet open or temporarily has no eligible teams.
+   next stage is not yet open, a roll fails (`rollRetry`), or the user must
+   manually `retry-roll` / `stop-rolling` to release funds.
 8. **Commodity-specific risk** — Oil uses CL=F/MEXC futures-oriented sources;
    Gold and Silver use spot oracle feeds. Price source differences may affect
    settlement outcomes vs spot expectations.

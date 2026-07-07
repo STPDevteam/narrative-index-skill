@@ -10,6 +10,11 @@
 > **Product abstraction**: New surfaces should prefer `/products/:productKey/*`.
 > Legacy `/index/*` endpoints remain for asset-direction compatibility.
 >
+> **Remote signing**: The main API does not hold KMS decrypt permission or
+> plaintext owner keys. It calls an isolated signing-service over an internal
+> authenticated channel. The signer can enforce mTLS, throttling, raw-tx deny,
+> CLOB auth/order checks, and withdraw destination policy.
+>
 > **Geo-restriction**: New-position endpoints return HTTP 403 `GEO_RESTRICTED`
 > in blocked or close-only regions. Close-only regions may still redeem and
 > withdraw. Read-only endpoints are unaffected.
@@ -19,16 +24,19 @@
 
 ## Contents
 
-- [Authentication](#authentication) — challenge + `POST /auth/connect`
+- [Authentication](#authentication) — challenge, connect, session token, logout, Twitter
 - [Wallet Management](#wallet-management) — balance, deposit address, withdraw-fee, withdraw
 - [Market Status & Assets](#market-status--assets) — asset registry, market availability
 - [Products](#products) — productKey-based INDEX/MANAGED products
+- [World Cup Positions](#world-cup-positions) — auto-roll chains, locks, retry/stop
 - [Index Investment](#index-investment) — preview, invest, positions, redeem
 - [Performance](#performance) — monthly daily returns
 - [Chart](#chart) — asset price + strike lines
 - [Portfolio Dashboard](#portfolio-dashboard) — NAV, PnL, totalReturn, breakdown
+- [Referral](#referral) — permanent referral code and rewards
+- [Deposit Integrations](#deposit-integrations) — Fun.xyz / Relay.link proxies
 - [Accounting](#accounting) — no public read endpoints; use portfolio APIs
-- [Signature Authentication](#signature-authentication) — EIP-712 signing
+- [Signature Authentication](#signature-authentication) — EIP-712 V2 signing
 - [Enum Reference](#enum-reference) — all enum values
 
 ---
@@ -67,9 +75,18 @@ Register or log in after signing the challenge.
   "walletAddress": "0x1234567890abcdef1234567890abcdef12345678",
   "signature": "0x...",
   "challenge": "Sign this message to verify your wallet ownership.\n\nAddress: 0x...\nNonce: ...",
-  "inviteCode": "OPTIONAL"
+  "inviteCode": "OPTIONAL",
+  "chainId": 8453
 }
 ```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| walletAddress | Yes | EVM address that signed the challenge |
+| signature | Yes | EIP-191 `personal_sign` of `challenge` |
+| challenge | Yes | From `GET /auth/challenge` |
+| inviteCode | No | Referrer's permanent code; binding only at first registration |
+| chainId | No | Wallet's current chain (e.g. Base `8453`); speeds Smart Wallet verify |
 
 **Response:**
 
@@ -83,6 +100,7 @@ Register or log in after signing the challenge.
   "isApproved": true,
   "isNewUser": false,
   "twitterHandle": null,
+  "sessionToken": "64-char-hex",
   "createdAt": "2026-03-12T08:00:00.000Z"
 }
 ```
@@ -93,7 +111,44 @@ Register or log in after signing the challenge.
 | safeAddress | Platform-managed wallet address |
 | depositAddress | Same as safeAddress; send USDC or USDC.e here |
 | isNewUser | true on first connect |
+| isDeployed / isApproved | Wallet provisioning status; retry connect if false |
 | twitterHandle | Linked Twitter handle if available |
+| sessionToken | 7-day bearer token for Campaign writes |
+
+### POST /auth/logout
+
+Invalidate the caller's session token. Idempotent.
+
+**Headers:** `Authorization: Bearer <sessionToken>`
+
+**Response:** `{ "ok": true }`
+
+### POST /auth/twitter/link
+
+Link a Twitter account via OAuth 2.0 PKCE. Requires EIP-712 `TwitterLink` signature.
+
+**Request:**
+
+```json
+{
+  "userId": "uuid",
+  "code": "oauth-code",
+  "redirectUri": "https://app.polyvaults.ai/auth/x/callback",
+  "codeVerifier": "pkce-verifier",
+  "signature": "0x...",
+  "nonce": 1740643200000
+}
+```
+
+### DELETE /auth/twitter/link
+
+Unlink Twitter. Requires EIP-712 `TwitterUnlink` signature.
+
+**Request:** `{ "userId": "uuid", "signature": "0x...", "nonce": 1740643200000 }`
+
+### GET /auth/twitter/:userId
+
+Check Twitter linking status. Returns `{ linked: true, twitterId, twitterHandle, ... }` or `{ linked: false }`.
 
 ---
 
@@ -101,7 +156,9 @@ Register or log in after signing the challenge.
 
 ### GET /wallets/:userId
 
-Full wallet info (ownerAddress, safeAddress, isDeployed, isApproved).
+Full wallet info (`ownerAddress`, `safeAddress`, `walletType`, `isDeployed`,
+`isApproved`). `walletType` can be `DEPOSIT_WALLET` for Polymarket Deposit
+Wallet users or `SAFE` for legacy Safe users.
 
 ### GET /wallets/:userId/balance
 
@@ -169,7 +226,7 @@ Supports Polygon local transfer and cross-chain withdrawal via Polymarket Bridge
 |-------|------|----------|-------------|
 | userId | string | Yes | User ID |
 | toAddress | string | Yes | Destination address (EVM `0x...` or Solana base58) |
-| amount | number | Yes | Amount in dollars, min $0.01 |
+| amount | number | Yes | Maximum authorized withdrawal amount in dollars, min $0.01. The actual transfer may be lower because of available balance/precision, but must never exceed this value. |
 | token | string | No | Polygon only: `"USDC"`, `"USDC.e"`, or `"pUSD"` |
 | chain | string | No | Target chain (default `"polygon"`). Options: `polygon`, `ethereum`, `arbitrum`, `base`, `optimism`, `bsc`, `solana` |
 | previewEstimatedOutput | number | No | Cross-chain quote baseline from `withdraw-quote` |
@@ -327,13 +384,16 @@ asset-direction indices and managed products.
 
 ### GET /products
 
-Returns all registered products.
+Returns all registered INDEX and MANAGED products.
+
+```
+GET /products
+```
 
 ```json
 [
   { "productKey": "btc-bullish", "productKind": "INDEX", "displayName": "BTC Bullish", "asset": "BTC", "indexDirection": "BULLISH" },
-  { "productKey": "narrative-basket:taco-v1", "productKind": "MANAGED", "displayName": "TACO Index" },
-  { "productKey": "worldcup-2026:custom:r48-32", "productKind": "MANAGED", "displayName": "World Cup 2026 — Custom to Knockouts" }
+  { "productKey": "narrative-basket:taco-v1", "productKind": "MANAGED", "displayName": "TACO Index" }
 ]
 ```
 
@@ -407,38 +467,103 @@ Execute product investment. Requires EIP-712 signature.
 | productKey | Yes | Must match the URL path and signed message |
 | amount | Yes | USD amount; business minimum is $10 |
 | slippage | No | 0.001–0.1, default 0.02 |
-| autoCompound | No | Enables TACO reinvest or World Cup auto-roll when the product supports it; not signed |
-| strategyHash | Conditional | Required when `overrides.worldCup` is present |
+| autoCompound | No | Enables TACO reinvest or World Cup auto-roll when supported; **must be signed** in EIP-712 |
+| strategyHash | Conditional | Required for `overrides.worldCup` invests |
 | overrides | No | Product-specific options such as World Cup teams/exit stage |
+| signatureChainId | No | Wallet signing chain (e.g. Base `8453`); defaults to Polygon `137` |
+| fundsChainId | No | Funds execution chain; currently always `137` (Polygon) |
 
-Use `ProductInvest` signing for ordinary products. Use
+Use `ProductInvest` signing for ordinary INDEX/MANAGED products. Use
 `ProductInvestConfigured` when the request contains `overrides.worldCup`.
+`autoCompound` is part of the typed-data message (sign `false` when disabled).
+There is no per-user or platform active-position cap; auto-compounding can roll
+growing balances forward as long as the product remains eligible and collateral
+is available.
 
 Response fields mirror preview and add `depositId`, `hasPlacedOrders`,
 `overallStatus`, `createdAt`, and per-item order execution fields such as
 `orderId`, `orderStatus`, `filledAmount`, `filledShares`, `closeStatus`,
 `closedShares`, `remainingShares`, and `failReason`.
 
-### POST /products/:productKey/redeem
-
 Early-exit all FILLED positions for a product. Requires EIP-712
 `ProductRedeem`.
 
+If the product has no `FILLED` positions but the user has an active World Cup
+auto-roll chain with locked cash, the backend may **fallback** to stop-rolling
+semantics (close `autoCompound` + release lock) instead of returning 400.
+
 ```json
-{ "userId": "uuid", "productKey": "narrative-basket:taco-v1", "slippage": 0.02, "signature": "0x...", "nonce": 1780314719456 }
+{ "userId": "uuid", "productKey": "narrative-basket:taco-v1", "slippage": 0.02, "signature": "0x...", "nonce": 1780314719456, "signatureChainId": 137, "fundsChainId": 137 }
 ```
 
 Response: `sold`, `totalReceived`, `totalCost`, `profit`, `fee`,
-`closeStatus`, `results[]`. Fee is 5% of positive profit.
+`closeStatus`, `results[]`. Fee is 5% of positive profit (2.5% platform +
+2.5% referrer when the user has a referrer).
 
 ### POST /products/:productKey/stop-rolling
 
-Stops a World Cup auto-roll chain and releases application-level locked cash.
-No EIP-712 signature is required because no transfer occurs.
+Stops a **specific** World Cup auto-roll chain and releases application-level
+locked cash. Requires EIP-712 `ProductStopRolling` signature. Use when
+`rollRetry.canStopRolling=true` on the positions endpoint — typically when
+funds are stuck in `round_gap` waiting for the next stage or retry.
 
 ```json
-{ "userId": "uuid", "productKey": "worldcup-2026:custom:r48-32" }
+{
+  "userId": "uuid",
+  "productKey": "worldcup-2026:custom:r48-32",
+  "rootDepositId": "dep-root-uuid",
+  "signature": "0x...",
+  "nonce": 1780314719456,
+  "signatureChainId": 137,
+  "fundsChainId": 137
+}
 ```
+
+`rootDepositId` scopes the action to one chain; without it sibling chains at
+the same `productKey` could be affected.
+
+### POST /products/:productKey/retry-roll
+
+Manually retry a failed World Cup auto-roll for a specific chain. Requires
+EIP-712 `ProductRetryRoll` signature. Use when `rollRetry.canRetry=true`.
+
+```json
+{
+  "userId": "uuid",
+  "productKey": "worldcup-2026:host-nations:r48-32",
+  "rootDepositId": "dep-root-uuid",
+  "signature": "0x...",
+  "nonce": 1780314719456,
+  "signatureChainId": 137,
+  "fundsChainId": 137
+}
+```
+
+### POST /products/:productKey/potential-return
+
+World Cup only: multi-round idealized return ladder. Runs the same allocation
+as preview, then simulates auto-roll through the exit stage using current
+Polymarket prices. Geo-restricted like preview.
+
+```json
+{
+  "amount": 100,
+  "userId": "uuid",
+  "overrides": { "worldCup": { "teamRefs": ["BRAZIL"], "exitAfterStageKey": "final" } }
+}
+```
+
+### GET /products/worldcup-2026/positions
+
+Read-only dashboard view of all World Cup chains for a user: current stage,
+exit stage, locks, roll retry state, and per-round deposits.
+
+```
+GET /products/worldcup-2026/positions?userId=uuid
+```
+
+Key response fields per chain: `rootDepositId`, `chainStatus`, `exitAfterStageKey`,
+`willAutoRoll`, `lock`, `rollRetry.canRetry`, `rollRetry.canStopRolling`.
 
 ### GET /products/worldcup-2026/catalog
 
@@ -457,6 +582,36 @@ GET /portfolio/products?userId=uuid&family=worldcup-2026
 
 Single product portfolio. Returns standard metrics plus `clusters[]` for
 managed products and `teams[]` for World Cup products.
+
+### GET /portfolio/worldcup-2026/dashboard-groups
+
+Variant-level World Cup dashboard (Custom, European Teams, etc.) with
+aggregated P&L, total return, and `returnChart`.
+
+```
+GET /portfolio/worldcup-2026/dashboard-groups?userId=uuid&timeRange=all
+```
+
+---
+
+## World Cup Positions
+
+See `GET /products/worldcup-2026/positions` above. Use it to drive dashboard
+UI for auto-roll chains:
+
+| Field | Description |
+|-------|-------------|
+| chainStatus | `ACTIVE` / `PENDING_ROLL` / `TERMINAL` / `RELEASED` |
+| exitAfterStageKey | User-selected exit point (e.g. `final`, `semifinals`) |
+| lock.status | `ACTIVE` when cash is earmarked in `round_gap` |
+| rollRetry.canRetry | Show manual retry-roll button |
+| rollRetry.canStopRolling | Show stop-rolling button to release lock |
+
+Preset entry products include `worldcup-2026:europe:r48-32`,
+`worldcup-2026:south-am:r48-32`, `worldcup-2026:host-nations:r48-32`,
+`worldcup-2026:top-seeded:r48-32`, and `worldcup-2026:custom:r48-32`.
+Custom baskets pass `overrides.worldCup.teamRefs` and optional
+`exitAfterStageKey`.
 
 ---
 
@@ -862,6 +1017,68 @@ Per-direction (BULLISH / BEARISH) investment metrics.
 
 ---
 
+## Referral
+
+### GET /referral/:userId
+
+Permanent referral code and dashboard data.
+
+```json
+{
+  "referralCode": "A3X7K2",
+  "referralUrl": "https://polyvaults.ai?ref=A3X7K2",
+  "totalReferrals": 1,
+  "monthlyDeposits": {
+    "currentMonth": 1500.00,
+    "history": [{ "month": "2026-04", "volume": 1500.00, "count": 3 }]
+  },
+  "rewards": {
+    "totalAccrued": 125.50,
+    "totalPaid": 75.00,
+    "pending": 50.50,
+    "processing": 30.00
+  }
+}
+```
+
+| Rule | Value |
+|------|-------|
+| Referral binding | At registration only via `inviteCode` in `POST /auth/connect` |
+| Referral fee | 2.5% of referred user's profit (split from the 5% redemption fee) |
+| Payout | Monthly cron flags due rewards; actual transfer is manual operator-confirmed |
+
+Invalid `inviteCode` does **not** block registration — user simply won't be bound.
+
+---
+
+## Deposit Integrations
+
+Backend proxies for third-party deposit channels. Require server-side proxy
+tokens (`POLYVAULTS_FUN_PROXY_TOKEN` / `POLYVAULTS_RELAY_PROXY_TOKEN`); return
+503 `NOT_CONFIGURED` when unset.
+
+### Fun.xyz — `/api/integrations/fun/*`
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/integrations/fun/assets/allow` | Allowed deposit assets |
+| `GET /api/integrations/fun/assets/supported` | Supported assets list |
+| `POST /api/integrations/fun/eoa` | Resolve Fun EOA for deposit |
+| `POST /api/integrations/fun/fops` | Create Fun funding operation |
+| `GET /api/integrations/fun/asset/erc20/price/:chainId/:token` | Token price |
+
+### Relay.link — `/api/integrations/relay/*`
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/integrations/relay/chains` | Supported chains |
+| `POST /api/integrations/relay/quote` | Deposit quote |
+| `POST /api/integrations/relay/routable-options` | Routable asset options |
+| `GET /api/integrations/relay/requests` | Track deposit requests |
+| `POST /api/integrations/relay/deposit-address/reindex` | Reindex deposit address |
+
+---
+
 ## Accounting
 
 The current backend does not expose public accounting read endpoints. Use:
@@ -874,30 +1091,72 @@ The current backend does not expose public accounting read endpoints. Use:
 
 ## Signature Authentication
 
-Write endpoints (`invest`, `withdraw`, `redeem`) require EIP-712 typed data
-signatures from the user's connected wallet. The backend recovers the signer
-address and compares it to the registered user wallet or wallet owner address.
+Write endpoints for fund movement (`invest`, `withdraw`, `redeem`,
+`stop-rolling`, `retry-roll`) require EIP-712 typed data signatures from the
+user's connected wallet. The backend recovers the signer address and compares
+it to the registered user wallet or wallet owner address. Smart wallets
+(Coinbase Smart Wallet, Safe) on Base/Ethereum/Polygon are supported via
+ERC-1271 verification.
 
-**Domain:**
+### EIP-712 V2 Domain (recommended)
 
 ```json
-{ "name": "Polyvaults", "version": "1", "chainId": 137 }
+{ "name": "Polyvaults", "version": "2", "chainId": <signatureChainId> }
 ```
 
-**Types:**
+- `domain.chainId` = wallet signing chain (e.g. Base `8453`, Polygon `137`)
+- `message.fundsChainId` = funds execution chain; currently always `137` (Polygon)
+- Request body should include `signatureChainId` and `fundsChainId: 137`
+
+Legacy V1 (`version: "1"`, `chainId: 137`, no `fundsChainId`) is still accepted
+during rollout but unsuitable for Base Smart Wallet users.
+
+**Types (V2 — all fund actions include `fundsChainId: uint256` before `nonce`):**
 
 | Action | Fields |
 |--------|--------|
-| Invest | `action: "invest"`, `userId`, `indexType`, `amount: uint256` (6 decimals), `nonce: uint256` |
-| Withdraw | `action: "withdraw"`, `userId`, `toAddress`, `amount: uint256` (6 decimals), `nonce: uint256` |
-| Redeem | `action: "redeem"`, `userId`, `direction`, `asset`, `nonce: uint256` |
-| ProductInvest | `action: "productInvest"`, `userId`, `productKey`, `amount: uint256` (6 decimals), `nonce: uint256` |
-| ProductInvestConfigured | `action: "productInvestConfigured"`, `userId`, `productKey`, `amount: uint256` (6 decimals), `strategyHash: bytes32`, `nonce: uint256` |
-| ProductRedeem | `action: "productRedeem"`, `userId`, `productKey`, `nonce: uint256` |
+| Invest | `action: "invest"`, `userId`, `indexType`, `amount: uint256` (6 decimals), `fundsChainId`, `nonce` |
+| Withdraw | `action: "withdraw"`, `userId`, `toAddress`, `amount: uint256` (max authorized), `token`, `chain`, `fundsChainId`, `nonce` |
+| Redeem | `action: "redeem"`, `userId`, `direction`, `asset`, `fundsChainId`, `nonce` |
+| ProductInvest | `action: "productInvest"`, `userId`, `productKey`, `amount: uint256`, `autoCompound: bool`, `fundsChainId`, `nonce` |
+| ProductInvestConfigured | `action: "productInvestConfigured"`, `userId`, `productKey`, `amount: uint256`, `strategyHash: bytes32`, `autoCompound: bool`, `fundsChainId`, `nonce` |
+| ProductRedeem | `action: "productRedeem"`, `userId`, `productKey`, `fundsChainId`, `nonce` |
+| ProductStopRolling | `action: "productStopRolling"`, `userId`, `productKey`, `rootDepositId`, `fundsChainId`, `nonce` |
+| ProductRetryRoll | `action: "productRetryRoll"`, `userId`, `productKey`, `rootDepositId`, `fundsChainId`, `nonce` |
+| TwitterLink | `action: "twitterLink"`, `userId`, `nonce` |
+| TwitterUnlink | `action: "twitterUnlink"`, `userId`, `nonce` |
 
 Use `ProductInvestConfigured` whenever `POST /products/:productKey/invest`
-contains `overrides.worldCup`; the `strategyHash` must come from preview and
-match the normalized World Cup config.
+contains `overrides.worldCup`; the hash must come from preview or definition
+and match the normalized configuration. Sign `autoCompound: false`
+explicitly when the checkbox is unchecked.
+
+Withdraw: sign the **final** `token` and `chain` values that will be sent in
+the request body (defaults: `USDC.e` / `polygon`).
+
+### Session Token (non-fund writes)
+
+Campaign write endpoints accept `Authorization: Bearer <sessionToken>` instead
+of per-request EIP-712. Token is issued by `POST /auth/connect` (7-day TTL).
+Revoke via `POST /auth/logout`. Fund operations still require EIP-712 every time.
+
+### Internal Signing Service Notes
+
+These are operator/debugging notes for CLOB and relayed transaction failures:
+
+- Main API signs through `RemoteSigner`; plaintext owner EOA keys never appear
+  in the main app process.
+- CLOB API key derivation (`ClobAuth`) must be signed by the owner EOA. Do not
+  set CLOB L1 `POLY_ADDRESS` to a Deposit Wallet or Safe contract address; it
+  causes `Invalid L1 Request headers` / malformed API credentials.
+- Deposit Wallet order signing uses `POLY_1271`; Safe users use
+  `POLY_GNOSIS_SAFE`.
+- Signing-service policy mode is `off | audit | enforce`. In `audit`, denied
+  policy decisions are logged but not blocked; in `enforce`, disallowed
+  destinations/selectors/CLOB domains are rejected.
+- Raw transaction signing is disabled by default (`SIGNER_ALLOW_RAW_TX=false`).
+- Withdraw signatures are re-checked by the signing-service for destination,
+  maximum amount, token, and chain binding before external transfers are signed.
 
 **Nonce**: Use `Date.now()` (millisecond timestamp). Valid from
 `now - 5 minutes` through a small future skew (default 2 seconds). **Each

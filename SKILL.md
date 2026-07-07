@@ -3,12 +3,13 @@ name: narrative-index
 description: >-
   Operates a custodial multi-asset directional index investment platform on
   Polymarket. Supports asset-direction indices, NarrativeBasket products such
-  as TACO, and World Cup 2026 bracket products. Provides wallet management,
-  pUSD collateral preparation, Bullish/Bearish/product preview and execution,
-  portfolio monitoring, performance returns, chart data, and withdrawals. Use
-  when the user mentions crypto/commodity index investing, prediction markets,
-  Polymarket, portfolio performance, USDC/pUSD balance, deposits, withdrawals,
-  productKey, TACO, World Cup brackets, or strike price allocation.
+  as TACO, World Cup 2026 bracket products. Provides wallet management,
+  portfolio monitoring, performance returns, chart data, withdrawals, referral
+  rewards, World Cup auto-roll chain management, remote signing policy, and
+  multi-chain wallet EIP-712 V2 signatures. Use when the user mentions
+  investing, prediction markets, Polymarket, portfolio performance, USDC/pUSD
+  balance, deposits, withdrawals, productKey, TACO, World Cup brackets, CLOB
+  auth, signing service, or strike price allocation.
 ---
 
 # Narrative Index — Agent Skill
@@ -17,9 +18,10 @@ description: >-
 
 Polyvaults is a custodial Polymarket index platform. It supports legacy
 asset-direction indices (`BTC/OIL/ETH` Bullish/Bearish), managed baskets such as
-TACO, and World Cup 2026 bracket products. Each user gets a segregated wallet
-managed by the platform. Trades are executed as gasless FAK market orders via
-Polymarket CLOB V2 with builder attribution.
+TACO, and World Cup 2026 bracket products. Each user gets a segregated
+Polymarket Deposit Wallet or legacy Safe managed by the platform. Trades are
+executed as gasless FAK market orders via Polymarket CLOB V2 with builder
+attribution.
 
 - **Base URL**: `https://api.polyvaults.ai`
 - **Network**: Polygon
@@ -27,15 +29,24 @@ Polymarket CLOB V2 with builder attribution.
   investment preparation wraps/converts them into pUSD when needed.
 - **Auth model**: All requests identify the user by `userId` (UUID), obtained
   through `connect_wallet` after an EIP-191 challenge signature.
-- **Signature auth**: Write endpoints (`invest`, `withdraw`, `redeem`) require
-  EIP-712 typed data signatures from the user's connected wallet.
+- **User signature auth**: Fund-moving write endpoints require EIP-712 V2
+  typed data (`version: "2"`, `domain.chainId` = wallet chain, `fundsChainId: 137`).
+  `autoCompound` is part of the invest signature. World Cup `stop-rolling` and
+  `retry-roll` also require signatures scoped by `rootDepositId`.
+- **Session token**: `POST /auth/connect` returns a 7-day `sessionToken` for
+  Campaign write endpoints (non-fund actions). Fund ops still sign every time.
+- **Remote signing**: The main API never holds KMS decrypt permission or
+  plaintext owner keys. A separate signing-service signs EIP-191/EIP-712
+  payloads over an internal authenticated channel, with optional mTLS, rate
+  limits, and destination/signature policy enforcement.
 - **Geo-restriction**: New-position endpoints are blocked in restricted
   countries/regions. Close-only regions may redeem/withdraw but cannot open new
   positions. Read-only endpoints are unaffected.
 - **Rate limiting**: Global rate limits apply — 10 requests/second and
   100 requests/minute per IP.
-- **Key encryption**: Wallet private keys are encrypted at rest using AWS KMS
-  (AES-256 symmetric encryption via AWS KMS API).
+- **CLOB auth**: CLOB API keys are derived with the owner EOA. For Deposit
+  Wallets, the CLOB order itself uses `POLY_1271`; contract wallets are not
+  used as the L1 `POLY_ADDRESS` for `/auth/api-key`.
 
 ### Supported Assets
 
@@ -56,6 +67,29 @@ For strategy mechanics see [references/strategy-guide.md](references/strategy-gu
 
 ---
 
+## Agent User Journey (end-to-end)
+
+| Phase | Goal | Primary tools |
+|-------|------|---------------|
+| 1. Onboard | Create user + custodial wallet | `connect_wallet` |
+| 2. Fund | Get deposit address, confirm balance | `get_deposit_address`, `get_wallet_balance` |
+| 3. Discover | Pick asset/product, check tradability | `get_assets`, `get_market_status`, `list_products`, `get_product_health` |
+| 4. Preview | Show allocation before signing | `preview_product` or `preview_index` |
+| 5. Invest | EIP-712 sign + execute | `invest_product` or `invest_index` |
+| 6. Monitor | Dashboard NAV/PnL/holdings | `get_portfolio`, `get_product_portfolios`, `get_product_portfolio` |
+| 7. Exit / cash out | Early redeem or withdraw | `redeem_product` / `early_redeem`, `withdraw` |
+
+**Deposits** are on-chain transfers to `depositAddress` on Polygon (USDC or
+USDC.e). There is no backend "deposit" write API — poll `get_wallet_balance`
+until funds arrive. Cross-chain deposits use Fun.xyz / Relay.link proxies
+(documented in api-reference).
+
+**First connect** may return `isDeployed: false` or `isApproved: false` while
+the platform wallet is still provisioning. Retry `connect_wallet` after a few
+seconds, or call `get_wallet_info` until both are true before investing.
+
+---
+
 ## Available Tools
 
 ### 1. connect_wallet
@@ -67,11 +101,19 @@ signature. First-time connect auto-creates a user record and wallet.
 ```
 GET /auth/challenge?address=0x...
 POST /auth/connect
-Body: { "walletAddress": "0x...", "signature": "0x...", "challenge": "...", "inviteCode": "optional" }
+Body: { "walletAddress": "0x...", "signature": "0x...", "challenge": "...", "inviteCode": "optional", "chainId": 8453 }
 ```
 
-Returns `userId`, `safeAddress`, `depositAddress`, `isNewUser`,
-`twitterHandle`.
+Optional `chainId` — wallet's current EVM chain (e.g. Base `8453`). Recommended
+for Smart Wallet users to speed up signature verification.
+
+Returns `userId`, `safeAddress`, `depositAddress`, `isDeployed`, `isApproved`,
+`isNewUser`, `twitterHandle`, `sessionToken`. Optional `inviteCode` binds
+referral at first registration only. Store `sessionToken` for Campaign writes
+(`Authorization: Bearer <sessionToken>`).
+
+If `isDeployed` or `isApproved` is false, wallet provisioning is still in
+progress — retry connect or poll `get_wallet_info` before invest.
 
 ```bash
 curl 'https://api.polyvaults.ai/auth/challenge?address=0x1234...abcd'
@@ -79,6 +121,20 @@ curl -X POST https://api.polyvaults.ai/auth/connect \
   -H 'Content-Type: application/json' \
   -d '{"walletAddress":"0x1234...abcd","signature":"0x...","challenge":"Sign this message..."}'
 ```
+
+---
+
+### 2a. get_wallet_info
+
+Full wallet metadata including deployment/approval status and wallet type.
+
+```
+GET /wallets/:userId
+```
+
+Returns `ownerAddress`, `safeAddress`, `walletType` (`DEPOSIT_WALLET` or
+`SAFE`), `isDeployed`, `isApproved`. Use after first connect to confirm the
+wallet is ready for trading.
 
 ---
 
@@ -155,7 +211,9 @@ against available liquidity; any unfilled portion is cancelled.
 If the user's pUSD balance is insufficient, the platform prepares collateral by
 wrapping USDC.e and, if needed, swapping native USDC to USDC.e before wrapping.
 
-> Requires EIP-712 signature. See [api-reference.md](references/api-reference.md#signature-authentication) for signing details.
+> Requires EIP-712 `Invest` signature. Include `signatureChainId` and
+> `fundsChainId: 137`. See
+> [api-reference.md](references/api-reference.md#signature-authentication).
 
 ```
 POST /index/invest
@@ -244,7 +302,9 @@ Withdraw from the user's platform wallet. Supports Polygon local transfers and
 cross-chain withdrawals via the Polymarket Bridge (Ethereum, Arbitrum, Base,
 Optimism, BSC, Solana).
 
-> Requires EIP-712 signature.
+> Requires EIP-712 `Withdraw` signature. Sign `token` and `chain` in the typed
+> data. Include `signatureChainId` and `fundsChainId: 137`. See
+> [api-reference.md](references/api-reference.md#signature-authentication).
 
 ```
 POST /wallets/withdraw
@@ -328,13 +388,16 @@ curl 'https://api.polyvaults.ai/chart/strikes?indexType=BULLISH&asset=OIL'
 ### 11. early_redeem
 
 Market-sell all active positions for a given direction (BULLISH or BEARISH).
-A 5% fee is charged on positive profit and sent to the platform fee/referral
-split. Partial closes can return `RETRYING` and be retried by the backend.
+A 5% fee is charged on positive profit (2.5% platform + 2.5% referrer when
+the user has a referrer). Partial closes can return `RETRYING` and be retried
+by the backend.
 
 Resolved positions are automatically redeemed by a cron job every 15 minutes —
 this endpoint is only for **early** pre-settlement exits.
 
-> Requires EIP-712 signature.
+> Requires EIP-712 `Redeem` signature. Include `signatureChainId` and
+> `fundsChainId: 137`. See
+> [api-reference.md](references/api-reference.md#signature-authentication).
 
 ```
 POST /index/redeem
@@ -416,14 +479,14 @@ curl https://api.polyvaults.ai/assets
 
 ### 15. list_products
 
-List all registered investment products. Current product families include:
-
-- INDEX products: `btc-bullish`, `btc-bearish`, `eth-bullish`, `oil-bullish`, etc.
-- MANAGED products: `narrative-basket:taco-v1`, `worldcup-2026:*`.
+List all registered investment products (INDEX and MANAGED families).
 
 ```
 GET /products
 ```
+
+Current families include `btc-bullish`, `narrative-basket:taco-v1`,
+`worldcup-2026:*`, etc.
 
 ```bash
 curl https://api.polyvaults.ai/products
@@ -475,21 +538,37 @@ For World Cup custom baskets, pass `overrides.worldCup.teamRefs`. The response
 can include `normalizedWorldCupConfig` and `strategyHash`; keep these for
 `invest_product`.
 
+**Preview fields agents should surface:**
+
+| Field | Use |
+|-------|-----|
+| `items[]` / `allocations[]` | Per-market/strike allocation, weight, buy price |
+| `droppedStrikes[]` | Markets pruned (OI, min order, price bounds) |
+| `effectiveAmount` / `swapFee` | Net investable amount after collateral prep |
+| `minimumDepositRequired` | Min amount to keep all eligible legs |
+| `strategyHash` | Required for World Cup custom basket invest |
+| `eventTitle` / `eventSlug` | Context for INDEX products |
+
+Call `get_product_health` first when you need tradability / drop reasons before
+preview.
+
 ---
 
 ### 19. invest_product
 
 Current recommended investment endpoint. Creates a deposit, prepares pUSD, and
-places FAK orders.
+places FAK orders. There is no per-user or platform active-position cap; the
+business minimum remains $10.
 
 ```
 POST /products/:productKey/invest
 Body: { "userId": "...", "productKey": "...", "amount": 100, "slippage": 0.02, "autoCompound": false, "strategyHash": "0x...", "overrides": { ... }, "signature": "0x...", "nonce": 1740643200000 }
 ```
 
-Requires EIP-712 `ProductInvest` signature. If `overrides.worldCup` is present,
-sign `ProductInvestConfigured` and include the preview `strategyHash`.
-`autoCompound` is not part of the signature.
+Requires EIP-712 `ProductInvest` signature. Use `ProductInvestConfigured` when
+the request contains `overrides.worldCup` and include the preview `strategyHash`.
+`autoCompound` **must be signed** (`false` when disabled). Include
+`signatureChainId` and `fundsChainId: 137`.
 
 ---
 
@@ -532,17 +611,73 @@ GET /portfolio/products/:productKey?userId=...&timeRange=all
 
 ### 23. stop_rolling
 
-Stop a World Cup auto-roll chain and release application-level locked cash.
-This does not withdraw funds and does not require EIP-712 signature.
+Stop a **specific** World Cup auto-roll chain and release application-level
+locked cash. Requires EIP-712 `ProductStopRolling` with `rootDepositId`.
+Only use when `rollRetry.canStopRolling=true` from `get_worldcup_positions`.
 
 ```
 POST /products/:productKey/stop-rolling
-Body: { "userId": "...", "productKey": "..." }
+Body: { "userId": "...", "productKey": "...", "rootDepositId": "...", "signature": "0x...", "nonce": ..., "signatureChainId": 137, "fundsChainId": 137 }
 ```
 
 ---
 
-### 24. get_worldcup_catalog
+### 24. retry_roll
+
+Manually retry a failed World Cup auto-roll. Requires EIP-712 `ProductRetryRoll`.
+Use when `rollRetry.canRetry=true` from `get_worldcup_positions`.
+
+```
+POST /products/:productKey/retry-roll
+Body: { "userId": "...", "productKey": "...", "rootDepositId": "...", "signature": "0x...", "nonce": ..., "signatureChainId": 137, "fundsChainId": 137 }
+```
+
+---
+
+### 25. get_worldcup_positions
+
+Read-only dashboard of all World Cup chains: current stage, exit stage, locks,
+roll retry state, and per-round deposits.
+
+```
+GET /products/worldcup-2026/positions?userId=...
+```
+
+---
+
+### 26. get_worldcup_dashboard_groups
+
+Variant-level World Cup portfolio (Custom, European Teams, etc.) with aggregated
+P&L and return chart.
+
+```
+GET /portfolio/worldcup-2026/dashboard-groups?userId=...&timeRange=all
+```
+
+---
+
+### 27. get_worldcup_potential_return
+
+World Cup only: simulate multi-round idealized returns through exit stage.
+
+```
+POST /products/:productKey/potential-return
+Body: { "amount": 100, "userId": "...", "overrides": { "worldCup": { ... } } }
+```
+
+---
+
+### 28. get_referral
+
+Get permanent referral code, share URL, and reward dashboard.
+
+```
+GET /referral/:userId
+```
+
+---
+
+### 29. get_worldcup_catalog
 
 Fetch World Cup 2026 stages, teams, entry presets, exit stages, and the current
 schedule gate. Use this before rendering World Cup preset/custom investment UI.
@@ -557,24 +692,33 @@ GET /products/worldcup-2026/catalog
 
 ### Workflow 1 — New User Deposit & Invest
 
-1. **connect_wallet** — get challenge, sign it, then obtain `userId` and `depositAddress`
-2. Instruct the user to transfer USDC or USDC.e to `depositAddress` on Polygon
-   (both accepted; collateral is prepared into pUSD at invest time)
-3. **get_wallet_balance** — confirm deposit arrived; show `withdrawableBalance`
-4. **list_products** or **get_assets** — choose a product or active asset
-5. Prefer **preview_product** for new UI; use **preview_index** only for legacy
-   asset-direction flows
-6. Sign the right EIP-712 action, then call **invest_product** or **invest_index**
-   - If `PARTIAL`, inform the user which strikes failed
-   - If `hasPlacedOrders`, tell the user fills are still syncing
+1. **connect_wallet** — challenge → sign → obtain `userId`, `depositAddress`,
+   `sessionToken`; retry if `isDeployed`/`isApproved` are false
+2. **get_deposit_address** (or use `depositAddress` from connect) — instruct user
+   to send USDC or USDC.e on Polygon; no backend deposit API exists
+3. **get_wallet_balance** — poll until `withdrawableBalance` reflects the deposit
+4. **get_assets** + **get_market_status** — confirm asset is `active`
+5. **list_products** or **get_assets** — choose a product or active asset
+6. **get_product_health** (optional) — check tradability / drop reasons
+7. **preview_product** (preferred) or **preview_index** — show `items[]`,
+   `droppedStrikes[]`, `minimumDepositRequired`, `effectiveAmount`
+8. Sign EIP-712 (`ProductInvest`, `ProductInvestConfigured`, or legacy `Invest`)
+   then **invest_product** or **invest_index**
+   - If `PARTIAL`, inspect per-item `orderStatus` / `failReason`
+   - If `hasPlacedOrders`, fills are still syncing (cron every 5 min)
 
-### Workflow 2 — Check Investment Performance
+### Workflow 2 — Check Investment Performance (Dashboard)
 
-1. **get_portfolio** — show NAV, PnL, totalReturn (optionally filter by `asset`)
-2. **get_product_portfolios** — show product-level holdings when the UI is product-based
-3. **get_product_portfolio** — show a TACO/World Cup/INDEX product detail page
-4. **get_returns** — show daily benchmark index returns vs asset spot
-5. **get_positions** — show legacy per-strike deposits if needed
+1. **get_portfolio** — aggregate NAV, PnL, `totalReturn`, `returnChart`
+   (optionally `?asset=BTC` for per-direction breakdown)
+2. **get_portfolio_breakdown** — legacy BULLISH/BEARISH split per asset
+3. **get_product_portfolios** — all product holdings (`?family=worldcup-2026`
+   for World Cup list)
+4. **get_product_portfolio** — single product detail (clusters, teams, chart)
+5. **get_worldcup_positions** — World Cup auto-roll chains, locks, retry state
+6. **get_returns** — public benchmark daily returns vs asset spot (not user PnL)
+7. **get_positions** — legacy per-deposit strike detail if needed
+8. **get_chart** — price + strike context for asset-direction products
 
 ### Workflow 3 — Withdraw Funds (Polygon)
 
@@ -627,12 +771,22 @@ GET /products/worldcup-2026/catalog
 1. **get_worldcup_catalog** — fetch entry presets, custom team catalog, exit
    stages, and schedule gate
 2. For presets, use `entryPresets[].entryProductKey`; for custom baskets, use
-   `custom.entryProductKey` and pass `overrides.worldCup.teamRefs`
+   `custom.entryProductKey` and pass `overrides.worldCup.teamRefs` plus optional
+   `exitAfterStageKey`
 3. **preview_product** — keep `normalizedWorldCupConfig` and `strategyHash`
-4. Sign `ProductInvestConfigured` if `overrides.worldCup` is present, then call
-   **invest_product**
-5. If `autoCompound` is enabled, watch `lockedBalance` and offer
-   **stop_rolling** to release waiting cash
+4. Sign `ProductInvestConfigured` (include `autoCompound` bool) if
+   `overrides.worldCup` is present, then call **invest_product**
+5. **get_worldcup_positions** — monitor chains, locks, and `rollRetry` state
+6. When `rollRetry.canRetry=true`, offer **retry_roll**; when
+   `rollRetry.canStopRolling=true`, offer **stop_rolling** (not redeem)
+7. For active FILLED positions, use **redeem_product** for early exit
+
+### Workflow 9 — Referral
+
+1. **connect_wallet** with optional `inviteCode` at first registration
+2. **get_referral** — show permanent `referralCode` and `referralUrl`
+3. Explain fee split: referred users' 5% profit fee shares 2.5% with referrer
+4. `rewards.pending` / `processing` are not yet paid — payout is manual monthly
 
 ---
 
@@ -649,6 +803,10 @@ GET /products/worldcup-2026/catalog
   key in request bodies and EIP-712 messages.
 - **Product kinds**: `INDEX` products are asset + direction indices.
   `MANAGED` products include TACO and World Cup bracket baskets.
+- **Deposits**: On-chain only — send USDC/USDC.e to `depositAddress` on Polygon.
+  Balance updates via `get_wallet_balance`; no custodial deposit API.
+- **Preview before invest**: Always call preview to show allocation, dropped
+  markets, and `minimumDepositRequired` before asking the user to sign.
 - **IndexType**: `BULLISH` buys YES on "Will [asset] hit $X?" (upside).
   `BEARISH` buys YES on "Will [asset] drop below $X?" (downside).
 - **Minimum investment**: Product preview DTOs allow $1, but real invest
@@ -662,9 +820,14 @@ GET /products/worldcup-2026/catalog
 - **Weight formula**: INDEX products weight by market liquidity and price.
   TACO weights by eligible event OI. World Cup weights by sub-market OI times
   buy price.
-- **Wallet**: Platform-managed wallet on Polygon. Users never hold the
-  operational private key; signing is handled by encrypted owner keys / remote
-  signing infrastructure.
+- **Wallet**: New users normally use a Polymarket Deposit Wallet
+  (`POLY_1271`); legacy users may still use a Safe (`POLY_GNOSIS_SAFE`). Users
+  never hold the operational owner key; all owner EOA signing is delegated to
+  the isolated signing-service.
+- **Signing service policy**: The signer can run in `off`, `audit`, or
+  `enforce` policy mode. It allows CLOB auth/order signing only when the
+  `policyContext` proves the owner EOA, maker wallet, chain, domain, and
+  destination are expected. Raw transaction signing is disabled by default.
 - **pUSD collateral**: Trading uses pUSD. The platform accepts USDC.e and
   native USDC deposits and prepares pUSD through wrapping/swap flows. Wallet
   balance includes pUSD, USDC.e, native USDC, locked balance, and withdrawable
@@ -672,9 +835,17 @@ GET /products/worldcup-2026/catalog
 - **Auto-redemption**: A cron job runs every 15 minutes to scan resolved
   markets. Winning CTF tokens are redeemed to pUSD, and a 5% profit fee is
   collected. Users do not need to manually claim settled positions.
+- **EIP-712 V2**: Domain `{ name: "Polyvaults", version: "2", chainId: signatureChainId }`.
+  All fund messages include `fundsChainId: 137`. Withdraw binds `token` + `chain`.
+  Legacy V1 (`version: "1"`) still accepted during rollout.
 - **Auto-roll / autoCompound**: TACO can reinvest profitable settlements back
-  into TACO. World Cup products can roll into the next stage product; waiting
-  cash is exposed as `lockedBalance` until reinvested or released.
+  into TACO. World Cup products roll into the next stage product when enabled;
+  waiting cash is `lockedBalance`. Use **stop_rolling** (with `rootDepositId`)
+  to release locks; use **retry_roll** after failed rolls.
+- **World Cup redeem fallback**: If no FILLED positions exist but locked cash
+  remains in an auto-roll chain, `redeem_product` may fallback to stop-rolling.
+- **Referral**: One permanent code per user; 2.5% of referred user profit goes
+  to referrer (from the 5% redemption fee). Binding only at first connect.
 - **Realized PnL tracking**: Both manual early redemption and auto-settlement
   profits/losses are tracked via `realizedPnl` in portfolio metrics.
 - **Price sources**: Crypto assets use Binance spot prices. Oil uses Yahoo
@@ -692,6 +863,7 @@ GET /products/worldcup-2026/catalog
 | 400 | "Unknown productKey" | Refresh `GET /products` or verify URL encoding |
 | 400 | "productKey in URL must match productKey in request body" | Use the same raw productKey in path/body/signature |
 | 400 | "Missing or invalid required field: strategyHash" | Preview World Cup custom config first and sign `ProductInvestConfigured` |
+| 400 | "Missing or invalid required field: rootDepositId" | Pass `rootDepositId` from `get_worldcup_positions` for stop-rolling/retry-roll |
 | 400 | "Only the last 6 months are available" | Adjust `month` param |
 | 400 | "Signature expired" | Regenerate nonce (use `Date.now()`) and re-sign |
 | 400 | "Nonce already used" | Generate a fresh nonce — each nonce is single-use |
